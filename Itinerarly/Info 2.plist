@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Cette app utilise votre localisation pour vous proposer des itinéraires personnalisés et des suggestions d'activités à proximité.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Cette app utilise votre localisation pour vous proposer des itinéraires personnalisés et des suggestions d'activités à proximité.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Cette app utilise le microphone pour les fonctionnalités audio des visites guidées.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Cette app utilise la reconnaissance vocale pour améliorer l'expérience des visites guidées.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Cette app accède à vos photos pour partager vos itinéraires et souvenirs de voyage.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Cette app utilise la caméra pour capturer vos souvenirs de voyage.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>your-backend-url.com</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.0</string>
+			</dict>
+		</dict>
+	</dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>location</string>
+	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.votrenom.itinerarly</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>itinerarly</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist> 
