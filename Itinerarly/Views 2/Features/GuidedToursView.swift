@@ -777,6 +777,10 @@ struct TourCard: View {
     let onDetailsTap: () -> Void
     let onRouteTap: () -> Void
     
+    // Système de suivi global des images utilisées
+    @State private static var usedImages: Set<String> = []
+    @State private static var imageAssignments: [String: String] = [:]
+    
     // Fonction supprimée - on utilise maintenant les images fixes de Paris
     
     // Utiliser directement les images de Paris (sans API)
@@ -784,8 +788,13 @@ struct TourCard: View {
         return getFallbackImageURL(for: tour)
     }
     
-    // Images fixes par ville (sans API) - Rotation pour éviter les doublons
+    // Images fixes par ville (sans API) - Système d'unicité garantie
     private func getFallbackImageURL(for tour: GuidedTour) -> String {
+        // Vérifier si une image est déjà assignée à ce tour
+        if let assignedImage = TourCard.imageAssignments[tour.id] {
+            return assignedImage
+        }
+        
         switch tour.city {
         case .paris:
             let parisImages = [
@@ -794,8 +803,8 @@ struct TourCard: View {
                 "https://cdn.pixabay.com/photo/2024/09/22/09/39/pantheon-paris-9065570_1280.jpg",
                 "https://cdn.pixabay.com/photo/2021/08/14/01/58/museum-6544420_1280.jpg"
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: parisImages.count)
-            return parisImages[index]
+            let selectedImage = getUniqueAvailableImage(from: parisImages, for: tour)
+            return selectedImage
             
         case .marseille:
             let marseilleImages = [
@@ -804,8 +813,8 @@ struct TourCard: View {
                 "https://cdn.pixabay.com/photo/2017/01/14/23/51/soldiers-1980666_1280.jpg",
                 "https://cdn.pixabay.com/photo/2015/10/23/22/32/marseille-1003822_1280.jpg"
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: marseilleImages.count)
-            return marseilleImages[index]
+            let selectedImage = getUniqueAvailableImage(from: marseilleImages, for: tour)
+            return selectedImage
             
         case .nice:
             let niceImages = [
@@ -813,8 +822,8 @@ struct TourCard: View {
                 "https://cdn.pixabay.com/photo/2019/10/01/20/31/nice-4519328_1280.jpg",
                 "https://cdn.pixabay.com/photo/2016/11/04/10/23/nice-1797345_1280.jpg"
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: niceImages.count)
-            return niceImages[index]
+            let selectedImage = getUniqueAvailableImage(from: niceImages, for: tour)
+            return selectedImage
             
         case .lyon:
             let lyonImages = [
@@ -823,7 +832,7 @@ struct TourCard: View {
                 "https://cdn.pixabay.com/photo/2015/09/16/14/46/lyon-942770_1280.jpg",
                 "https://cdn.pixabay.com/photo/2020/02/27/08/05/city-4883769_1280.jpg"
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: lyonImages.count)
+            let selectedImage = getUniqueAvailableImage(from: lyonImages.count)
             return lyonImages[index]
             
         case .bordeaux:
@@ -833,7 +842,7 @@ struct TourCard: View {
                 "https://cdn.pixabay.com/photo/2018/12/15/14/43/bordeaux-3876988_1280.jpg",
                 "https://cdn.pixabay.com/photo/2017/03/17/10/42/grand-2151219_1280.jpg"
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: bordeauxImages.count)
+            let selectedImage = getUniqueAvailableImage(from: bordeauxImages.count)
             return bordeauxImages[index]
             
         case .berlin:
@@ -842,7 +851,7 @@ struct TourCard: View {
                 "https://cdn.pixabay.com/photo/2019/09/11/11/39/city-4468570_1280.jpg",
                 "https://cdn.pixabay.com/photo/2022/01/28/20/38/road-6975808_1280.jpg"
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: berlinImages.count)
+            let selectedImage = getUniqueAvailableImage(from: berlinImages.count)
             return berlinImages[index]
             
         case .brussels:
@@ -852,7 +861,7 @@ struct TourCard: View {
                 "https://cdn.pixabay.com/photo/2014/11/06/21/13/brussels-519965_1280.jpg",
                 "https://cdn.pixabay.com/photo/2018/08/10/19/10/royal-palace-of-brussels-3597435_1280.jpg"
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: brusselsImages.count)
+            let selectedImage = getUniqueAvailableImage(from: brusselsImages.count)
             return brusselsImages[index]
             
         case .bruges:
@@ -861,7 +870,7 @@ struct TourCard: View {
                 "https://cdn.pixabay.com/photo/2017/03/04/10/12/belgian-2115765_1280.jpg",
                 "https://cdn.pixabay.com/photo/2018/08/19/12/20/brugge-3616516_1280.jpg"
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: brugesImages.count)
+            let selectedImage = getUniqueAvailableImage(from: brugesImages.count)
             return brugesImages[index]
             
         case .barcelona:
@@ -871,7 +880,7 @@ struct TourCard: View {
                 "https://cdn.pixabay.com/photo/2013/09/18/16/52/barcelona-183504_1280.jpg",
                 "https://cdn.pixabay.com/photo/2020/03/14/09/31/barcelona-4930104_1280.jpg"
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: barcelonaImages.count)
+            let selectedImage = getUniqueAvailableImage(from: barcelonaImages.count)
             return barcelonaImages[index]
             
         case .madrid:
@@ -881,7 +890,7 @@ struct TourCard: View {
                 "https://cdn.pixabay.com/photo/2014/04/19/12/40/madrid-327979_1280.jpg",
                 "https://cdn.pixabay.com/photo/2017/06/08/16/43/madrid-2384099_1280.jpg"
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: madridImages.count)
+            let selectedImage = getUniqueAvailableImage(from: madridImages.count)
             return madridImages[index]
             
         case .newYork:
@@ -889,7 +898,7 @@ struct TourCard: View {
                 "https://cdn.pixabay.com/photo/2015/03/11/12/31/buildings-668616_1280.jpg",
                 "https://cdn.pixabay.com/photo/2016/08/13/03/01/new-york-1590176_1280.jpg"
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: newYorkImages.count)
+            let selectedImage = getUniqueAvailableImage(from: newYorkImages.count)
             return newYorkImages[index]
             
         case .rome:
@@ -899,7 +908,7 @@ struct TourCard: View {
                 "https://cdn.pixabay.com/photo/2015/09/01/16/27/rome-917190_1280.jpg",
                 "https://cdn.pixabay.com/photo/2014/10/11/15/29/ancient-rome-484705_1280.jpg"
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: romeImages.count)
+            let selectedImage = getUniqueAvailableImage(from: romeImages.count)
             return romeImages[index]
             
         case .milan:
@@ -908,7 +917,7 @@ struct TourCard: View {
                 "https://cdn.pixabay.com/photo/2021/07/25/09/47/italy-6491421_1280.jpg",
                 "https://cdn.pixabay.com/photo/2019/08/31/18/36/tram-4443797_1280.jpg"
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: milanImages.count)
+            let selectedImage = getUniqueAvailableImage(from: milanImages.count)
             return milanImages[index]
             
         case .luxembourg:
@@ -918,7 +927,7 @@ struct TourCard: View {
                 "https://cdn.pixabay.com/photo/2017/08/18/18/57/luxembourg-2656040_1280.jpg",
                 "https://cdn.pixabay.com/photo/2022/03/01/13/41/travel-7041341_1280.jpg"
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: luxembourgImages.count)
+            let selectedImage = getUniqueAvailableImage(from: luxembourgImages.count)
             return luxembourgImages[index]
             
         case .casablanca:
@@ -927,7 +936,7 @@ struct TourCard: View {
                 "https://cdn.pixabay.com/photo/2017/06/13/20/16/casablanca-2399980_1280.jpg",
                 "https://media.gettyimages.com/id/84288050/fr/photo/place-mohammed-v-and-city-skyline-dusk.jpg?s=612x612&w=0&k=20&c=iLyuxkuakGgTnzJpUZBudlPIQTvpIi9fSjrhJ63QGV4="
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: casablancaImages.count)
+            let selectedImage = getUniqueAvailableImage(from: casablancaImages.count)
             return casablancaImages[index]
             
         case .tangier:
@@ -936,7 +945,7 @@ struct TourCard: View {
                 "https://media.gettyimages.com/id/986935356/fr/photo/north-africa-maghreb-morocco-tangier-old-medina-and-famous-continental-hotel.jpg?s=612x612&w=0&k=20&c=C7RP5QEcYz6cvnpDM404su8p5uvofIAp8QZNhkLWCtY=",
                 "https://media.gettyimages.com/id/979518900/fr/photo/tangier-harbour.jpg?s=612x612&w=0&k=20&c=6A_g9UmhyB4z7CmEiVDQ1qJXWjNwXqJYpn-hrl0g5qg="
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: tangierImages.count)
+            let selectedImage = getUniqueAvailableImage(from: tangierImages.count)
             return tangierImages[index]
             
         case .marrakech:
@@ -945,7 +954,7 @@ struct TourCard: View {
                 "https://media.gettyimages.com/id/577088095/fr/photo/menara-pavilion-and-gardens-marrakesh.jpg?s=612x612&w=0&k=20&c=wzGIbUyCABIOMpBDsYtHPXFUh5TI3YPvHdW8MNFn8I0=",
                 "https://media.gettyimages.com/id/1452433155/fr/photo/touriste-chinoise-dorigine-asiatique-curieuse-regardant-des-fleurs-s%C3%A9ch%C3%A9es-color%C3%A9es-sur-un.jpg?s=612x612&w=0&k=20&c=xo-uPjXZ3vGscxDfbEz0Sro80ZbGpzJGcQKE1C1nQ9E="
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: marrakechImages.count)
+            let selectedImage = getUniqueAvailableImage(from: marrakechImages.count)
             return marrakechImages[index]
             
         case .amsterdam:
@@ -954,7 +963,7 @@ struct TourCard: View {
                 "https://media.gettyimages.com/photo/tulipes-et-moulins-%C3%A0-vent.jpg?s=612x612&w=0&k=20&c=fSir4_pq-wAbwXNoZJV9lL2TrYo2iWj52jG7mgukq2I=",
                 "https://media.gettyimages.com/id/1407111882/fr/photo/traditional-dutch-houses-reflecting-in-the-canal-in-jordaan-neighbourhood-amsterdam.jpg?s=612x612&w=0&k=20&c=5aIciikZM5u8AEvBCeGjgTzXFNUkI00CjYv-7tb6OdU="
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: amsterdamImages.count)
+            let selectedImage = getUniqueAvailableImage(from: amsterdamImages.count)
             return amsterdamImages[index]
             
         case .london:
@@ -964,7 +973,7 @@ struct TourCard: View {
                 "https://media.gettyimages.com/id/1464758942/photo/regent-street-and-red-double-decker-bus-london-uk.jpg?s=612x612&w=0&k=20&c=iSP9GbAmCdSkphuXz4ct9xC7a5RFlBGByMhSovD24IU=",
                 "https://media.gettyimages.com/id/1974859701/photo/pink-magnolia-blossoms-adorn-londons-streets-in-spring.jpg?s=612x612&w=0&k=20&c=ydu8pGx2QY3_Qzl_SH5bfvJxek_PYSvIO6LHjC2dyXA="
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: londonImages.count)
+            let selectedImage = getUniqueAvailableImage(from: londonImages.count)
             return londonImages[index]
             
         case .istanbul:
@@ -974,7 +983,7 @@ struct TourCard: View {
                 "https://media.gettyimages.com/id/1576877722/photo/narrow-street-with-galata-tower-and-historic-building-in-beyoglu-district-istanbul-turkey.jpg?s=612x612&w=0&k=20&c=kwQZjR-BkXbY_2KJ0DB0amw4kXZF5WJf_OwmuHg4Mog=",
                 "https://media.gettyimages.com/id/522616554/photo/grand-bazaar-in-istanbul.jpg?s=612x612&w=0&k=20&c=mDUbw5CoBqK_zqkNfsxk2P9KPC2szX07Df7CWorOnUA="
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: istanbulImages.count)
+            let selectedImage = getUniqueAvailableImage(from: istanbulImages.count)
             return istanbulImages[index]
             
         case .prague:
@@ -983,7 +992,7 @@ struct TourCard: View {
                 "https://media.gettyimages.com/id/142761840/photo/view-from-letna-to-prague-city.jpg?s=612x612&w=0&k=20&c=ShQufC49I7l1QE-c0_ZRUZayVVi2_znSkgXG_sUD8VU=",
                 "https://media.gettyimages.com/id/1733473763/photo/view-of-prague-old-town-at-winter-over-vltava-river.jpg?s=612x612&w=0&k=20&c=Y-ms3x4vUxsjRrIU4YyWEbi6LgPX7PpKZf6QRdUPrAQ="
             ]
-            let index = getUniqueImageIndex(for: tour, totalImages: pragueImages.count)
+            let selectedImage = getUniqueAvailableImage(from: pragueImages.count)
             return pragueImages[index]
             
         default:
