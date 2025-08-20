@@ -174,53 +174,53 @@ class UniversalPlaceSearchService: ObservableObject {
         // Utiliser des termes multilingues qui fonctionnent dans tous les pays
         switch category {
         case .swimmingPool:
-            return "piscine swimming pool natación piscina"
+            return "piscine swimming pool natación piscina مسبح"
         case .bowling:
-            return "bowling bolos"
+            return "bowling bolos بولينج"
         case .climbingGym:
-            return "escalade climbing gym escalada"
+            return "escalade climbing gym escalada تسلق"
         case .iceRink:
-            return "patinoire ice rink pista de hielo"
+            return "patinoire ice rink pista de hielo حلبة جليد"
         case .miniGolf:
-            return "mini golf minigolf"
+            return "mini golf minigolf ميني جولف"
         case .escapeRoom:
-            return "escape room escape game"
+            return "escape room escape game غرفة الهروب"
         case .laserTag:
-            return "laser tag laser game"
+            return "laser tag laser game ليزر تاج"
         case .paintball:
-            return "paintball"
+            return "paintball paint ball بنتبول"
         case .karting:
-            return "karting go kart"
+            return "karting go kart كارتينج"
         case .trampolinePark:
-            return "trampoline park parc trampoline"
+            return "trampoline park parc trampoline ترامبولين"
         case .waterPark:
-            return "water park parc aquatique parque acuático"
+            return "water park parc aquatique parque acuático حديقة مائية"
         case .adventurePark:
-            return "adventure park parc aventure parque aventura"
+            return "adventure park parc aventure parque aventura حديقة مغامرات"
         case .zoo:
-            return "zoo zoológico"
+            return "zoo zoológico حديقة حيوانات"
         case .aquarium:
-            return "aquarium acuario"
+            return "aquarium acuario حوض أسماك"
         case .restaurant:
-            return "restaurant restaurante"
+            return "restaurant restaurante مطعم"
         case .cafe:
-            return "cafe café"
+            return "cafe café مقهى"
         case .bar:
-            return "bar"
+            return "bar حانة"
         case .museum:
-            return "museum musée museo"
+            return "museum musée museo متحف"
         case .shopping:
-            return "shopping tienda magasin"
+            return "shopping tienda magasin تسوق"
         case .sport:
-            return "gym sport salle de sport gimnasio"
+            return "gym sport salle de sport gimnasio صالة رياضية"
         case .nature:
-            return "park parc parque"
+            return "park parc parque حديقة"
         case .entertainment:
-            return "entertainment cinéma cine cinema"
+            return "entertainment cinéma cine cinema ترفيه"
         case .historical:
-            return "monument histórico"
+            return "monument histórico معلم تاريخي"
         case .culture:
-            return "cultural center centre culturel centro cultural"
+            return "cultural center centre culturel centro cultural مركز ثقافي"
         default:
             return category.displayName.lowercased()
         }
