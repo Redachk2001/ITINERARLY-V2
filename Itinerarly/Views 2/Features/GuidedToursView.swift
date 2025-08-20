@@ -170,14 +170,19 @@ struct GuidedToursView: View {
                                 }
                             }
                             .onChange(of: startAddress) { oldValue, newValue in
-                                // Ne pas confirmer automatiquement l'adresse
                                 if newValue.isEmpty {
-                                        isAddressConfirmed = false
-                                        confirmedAddress = ""
-                                        // Recharger sans adresse
-                                        loadToursWithLocation(for: selectedCity)
-                                    }
+                                    isAddressConfirmed = false
+                                    confirmedAddress = ""
+                                    // Recharger sans adresse
+                                    loadToursWithLocation(for: selectedCity)
+                                } else if newValue.count > 5 {
+                                    // Auto-confirmer l'adresse si elle fait plus de 5 caractères
+                                    confirmedAddress = newValue
+                                    isAddressConfirmed = true
+                                    // Géocoder l'adresse pour obtenir les coordonnées
+                                    geocodeAddress(newValue)
                                 }
+                            }
                                 
                                 if FeatureFlags.enableUseCurrentLocation {
                                 Button(action: {
