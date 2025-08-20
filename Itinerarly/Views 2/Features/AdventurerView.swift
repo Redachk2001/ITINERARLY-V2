@@ -41,6 +41,10 @@ struct AdventurerView: View {
     @State private var showingLocationPicker = false
     @State private var selectedTimeIndex = 1 // 1h par défaut
     @State private var selectedExcludedCategory: LocationCategory?
+    @State private var isGettingAddress = false
+    @State private var wantsToUseCurrentLocation = false
+    @State private var showingLocationAlert = false
+    @State private var locationAlertMessage = ""
     
     var body: some View {
         NavigationView {
@@ -70,6 +74,48 @@ struct AdventurerView: View {
                         userLocation: viewModel.userLocation
                     )
                 }
+            }
+            .onReceive(viewModel.locationManager.$location) { location in
+                guard FeatureFlags.enableUseCurrentLocation else { return }
+                if let location = location, isGettingAddress {
+                    viewModel.locationManager.reverseGeocode(location) { result in
+                        DispatchQueue.main.async {
+                            self.isGettingAddress = false
+                            self.wantsToUseCurrentLocation = false
+                            self.viewModel.locationManager.stopUpdatingLocation()
+                            switch result {
+                            case .success(let address):
+                                self.viewModel.filter.address = address
+                            case .failure(_):
+                                let coordString = String(format: "%.6f, %.6f", location.coordinate.latitude, location.coordinate.longitude)
+                                self.viewModel.filter.address = coordString
+                            }
+                        }
+                    }
+                }
+            }
+            .onChange(of: viewModel.locationManager.authorizationStatus) { newStatus in
+                guard FeatureFlags.enableUseCurrentLocation else { return }
+                if wantsToUseCurrentLocation, (newStatus == .authorizedWhenInUse || newStatus == .authorizedAlways) {
+                    isGettingAddress = true
+                    viewModel.locationManager.startUpdatingLocation()
+                }
+                if wantsToUseCurrentLocation, (newStatus == .denied || newStatus == .restricted) {
+                    wantsToUseCurrentLocation = false
+                    isGettingAddress = false
+                    showLocationError("Veuillez autoriser l'accès à la localisation dans les Réglages de votre iPhone.")
+                }
+            }
+            .alert("Autorisation de localisation", isPresented: $showingLocationAlert) {
+                Button("Annuler") { }
+                Button("Ouvrir Réglages") {
+                    if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(settingsUrl)
+                    }
+                }
+                Button("Réessayer") { getAddressFromCurrentLocation() }
+            } message: {
+                Text(locationAlertMessage)
             }
         }
     }
@@ -103,23 +149,28 @@ struct AdventurerView: View {
     
     // MARK: - Filtres Section
     private var filtersSection: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 16) {
             // Adresse
             addressSection
             
-            // Rayon
-            radiusSection
-            
-            // Temps disponible
-            timeSection
-            
             // Catégorie à exclure
             excludedCategorySection
+            
+            // Rayon + Temps sous la catégorie et au-dessus du transport
+            HStack(alignment: .top, spacing: ItinerarlyTheme.Spacing.sm) {
+                radiusSection
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                timeSection
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            
+            // Mode de transport
+            transportSection
         }
-        .padding(ItinerarlyTheme.Spacing.lg)
+        .padding(ItinerarlyTheme.Spacing.md)
         .background(Color(.systemBackground))
-        .cornerRadius(ItinerarlyTheme.CornerRadius.md)
-        .shadow(color: .black.opacity(0.1), radius: 5, x: 0, y: 2)
+        .cornerRadius(ItinerarlyTheme.CornerRadius.sm)
+        .shadow(color: .black.opacity(0.05), radius: 3, x: 0, y: 1)
     }
     
     // MARK: - Adresse Section
@@ -128,7 +179,7 @@ struct AdventurerView: View {
             Label(languageManager.translate("Point de départ"), systemImage: "mappin.and.ellipse")
                 .font(.headline)
             
-            HStack {
+            VStack(alignment: .leading, spacing: 8) {
                 LocationSearchField(
                     text: $viewModel.filter.address,
                     placeholder: "Votre adresse ou géolocalisation",
@@ -140,63 +191,89 @@ struct AdventurerView: View {
                     }
                 )
                 
-                Button(action: {
-                    showingLocationPicker = true
-                }) {
-                    Image(systemName: "location.fill")
-                        .foregroundColor(.purple)
+                if FeatureFlags.enableUseCurrentLocation {
+                    HStack(spacing: 12) {
+                        Button(action: { getAddressFromCurrentLocation() }) {
+                            HStack(spacing: 6) {
+                                if isGettingAddress {
+                                    ProgressView().scaleEffect(0.8)
+                                } else {
+                                    Image(systemName: "location.fill")
+                                }
+                                Text(isGettingAddress ? "Localisation..." : "Utiliser ma position")
+                            }
+                            .font(.caption)
+                            .foregroundColor(isGettingAddress ? .gray : ItinerarlyTheme.ModeColors.adventure)
+                        }
+                        .disabled(false)
+
+                        Spacer(minLength: 12)
+
+                        Button(action: { showingLocationPicker = true }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "mappin.and.ellipse")
+                                Text("Choisir sur la carte")
+                            }
+                            .font(.caption)
+                            .foregroundColor(ItinerarlyTheme.ModeColors.adventure)
+                        }
+                    }
                 }
             }
+            if FeatureFlags.enableUseCurrentLocation && isGettingAddress {
+                HStack(spacing: 6) {
+                    Image(systemName: (viewModel.locationManager.authorizationStatus == .authorizedWhenInUse || viewModel.locationManager.authorizationStatus == .authorizedAlways) ? "location.fill" : "location.slash")
+                        .foregroundColor((viewModel.locationManager.authorizationStatus == .authorizedWhenInUse || viewModel.locationManager.authorizationStatus == .authorizedAlways) ? .green : .red)
+                    Text(locationStatusText)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .sheet(isPresented: $showingLocationPicker) {
+            MapPickerView(
+                cityName: viewModel.filter.address.isEmpty ? "" : viewModel.filter.address,
+                initialCoordinate: viewModel.locationManager.location?.coordinate,
+                onPicked: { loc, address in
+                    viewModel.filter.address = address
+                }
+            )
         }
     }
     
     // MARK: - Rayon Section
     private var radiusSection: some View {
-        VStack(alignment: .leading, spacing: ItinerarlyTheme.Spacing.md) {
+        VStack(alignment: .leading, spacing: ItinerarlyTheme.Spacing.sm) {
             Label("Rayon de recherche", systemImage: "location.circle")
-                .font(.headline)
+                .font(.subheadline)
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(height: 20, alignment: .leading)
             
-            // Boutons de sélection rapide pour la distance
-            HStack(spacing: ItinerarlyTheme.Spacing.sm) {
-                ForEach([2, 5, 10, 15, 20], id: \.self) { distance in
-                    Button(action: {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                            viewModel.updateRadius(Double(distance))
-                        }
-                    }) {
-                        Text("\(distance)km")
-                            .font(ItinerarlyTheme.Typography.caption1)
-                            .fontWeight(.medium)
-                            .foregroundColor(viewModel.filter.radius == Double(distance) ? .white : .purple)
-                            .padding(.horizontal, ItinerarlyTheme.Spacing.md)
-                            .padding(.vertical, ItinerarlyTheme.Spacing.sm)
-                            .background(viewModel.filter.radius == Double(distance) ? Color.purple : Color.purple.opacity(0.1))
-                            .cornerRadius(ItinerarlyTheme.CornerRadius.sm)
-                    }
-                }
-            }
+            // Chips supprimés
             
             VStack(spacing: ItinerarlyTheme.Spacing.sm) {
                 HStack {
                     Text("1 km")
-                        .font(ItinerarlyTheme.Typography.caption1)
+                        .font(ItinerarlyTheme.Typography.caption2)
                         .foregroundColor(.secondary)
                     
                     Spacer()
                     
                     Text("\(Int(viewModel.filter.radius)) km")
-                        .font(ItinerarlyTheme.Typography.subheadline)
+                        .font(ItinerarlyTheme.Typography.caption1)
                         .fontWeight(.semibold)
                         .foregroundColor(.purple)
                     
                     Spacer()
                     
                     Text("30 km")
-                        .font(ItinerarlyTheme.Typography.caption1)
+                        .font(ItinerarlyTheme.Typography.caption2)
                         .foregroundColor(.secondary)
                 }
                 
-                // Slider personnalisé sans contrôles +/-
+                // Slider personnalisé sans contrôles +/−
                 GeometryReader { geometry in
                     let trackWidth = geometry.size.width
                     let normalizedValue = (viewModel.filter.radius - 1) / 29 // 1 à 30
@@ -227,66 +304,61 @@ struct AdventurerView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { location in
                         let newValue = 1 + (location.x / trackWidth) * 29
-                        let steppedValue = round(newValue)
-                        let clampedValue = max(1, min(30, steppedValue))
-                        
+                        let stepped = round(newValue)
+                        let clamped = max(1, min(30, stepped))
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                            viewModel.updateRadius(clampedValue)
+                            viewModel.updateRadius(clamped)
                         }
                     }
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                let x = max(0, min(trackWidth, value.location.x))
+                                let newValue = 1 + (x / trackWidth) * 29
+                                let stepped = round(newValue)
+                                let clamped = max(1, min(30, stepped))
+                                viewModel.updateRadius(clamped)
+                            }
+                    )
                 }
-                .frame(height: 40)
+                .frame(height: 28)
             }
         }
     }
     
     // MARK: - Temps Section
     private var timeSection: some View {
-        VStack(alignment: .leading, spacing: ItinerarlyTheme.Spacing.md) {
+        VStack(alignment: .leading, spacing: ItinerarlyTheme.Spacing.sm) {
             Label(languageManager.translate("Temps disponible"), systemImage: "clock")
-                .font(.headline)
+                .font(.subheadline)
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(height: 20, alignment: .leading)
             
-            // Boutons de sélection rapide pour le temps
-            HStack(spacing: ItinerarlyTheme.Spacing.sm) {
-                ForEach([30, 60, 90, 120, 180], id: \.self) { minutes in
-                    Button(action: {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                            viewModel.updateAvailableTime(TimeInterval(minutes * 60))
-                        }
-                    }) {
-                        Text("\(minutes)min")
-                            .font(ItinerarlyTheme.Typography.caption1)
-                            .fontWeight(.medium)
-                            .foregroundColor(viewModel.filter.availableTime == TimeInterval(minutes * 60) ? .white : .purple)
-                            .padding(.horizontal, ItinerarlyTheme.Spacing.md)
-                            .padding(.vertical, ItinerarlyTheme.Spacing.sm)
-                            .background(viewModel.filter.availableTime == TimeInterval(minutes * 60) ? Color.purple : Color.purple.opacity(0.1))
-                            .cornerRadius(ItinerarlyTheme.CornerRadius.sm)
-                    }
-                }
-            }
+            // Chips supprimés
             
             VStack(spacing: ItinerarlyTheme.Spacing.sm) {
                 HStack {
                     Text("30min")
-                        .font(ItinerarlyTheme.Typography.caption1)
+                        .font(ItinerarlyTheme.Typography.caption2)
                         .foregroundColor(.secondary)
                     
                     Spacer()
                     
                     Text(formatTime(viewModel.filter.availableTime))
-                        .font(ItinerarlyTheme.Typography.subheadline)
+                        .font(ItinerarlyTheme.Typography.caption1)
                         .fontWeight(.semibold)
                         .foregroundColor(.purple)
                     
                     Spacer()
                     
                     Text("12h")
-                        .font(ItinerarlyTheme.Typography.caption1)
+                        .font(ItinerarlyTheme.Typography.caption2)
                         .foregroundColor(.secondary)
                 }
                 
-                // Slider personnalisé pour le temps sans contrôles +/-
+                // Slider personnalisé pour le temps sans contrôles +/−
                 GeometryReader { geometry in
                     let trackWidth = geometry.size.width
                     let normalizedValue = (viewModel.filter.availableTime - 1800) / 41400 // 30min à 12h
@@ -317,27 +389,36 @@ struct AdventurerView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { location in
                         let newValue = 1800 + (location.x / trackWidth) * 41400
-                        let steppedValue = round(newValue / 1800) * 1800 // Pas de 30min
+                        let steppedValue = round(newValue / 1800) * 1800
                         let clampedValue = max(1800, min(43200, steppedValue))
-                        
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                             viewModel.updateAvailableTime(clampedValue)
                         }
                     }
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                let x = max(0, min(trackWidth, value.location.x))
+                                let newValue = 1800 + (x / trackWidth) * 41400
+                                let steppedValue = round(newValue / 1800) * 1800
+                                let clampedValue = max(1800, min(43200, steppedValue))
+                                viewModel.updateAvailableTime(clampedValue)
+                            }
+                    )
                 }
-                .frame(height: 40)
+                .frame(height: 28)
             }
         }
     }
     
     // MARK: - Catégorie exclue Section
     private var excludedCategorySection: some View {
-        VStack(alignment: .leading, spacing: ItinerarlyTheme.Spacing.md) {
+        VStack(alignment: .leading, spacing: ItinerarlyTheme.Spacing.sm) {
             Label("Catégorie à exclure", systemImage: "xmark.circle")
                 .font(.headline)
             
             Text("Choisissez ce que vous ne voulez PAS faire")
-                .font(.caption)
+                .font(ItinerarlyTheme.Typography.caption1)
                 .foregroundColor(.secondary)
             
             LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 2), spacing: ItinerarlyTheme.Spacing.sm) {
@@ -360,6 +441,32 @@ struct AdventurerView: View {
         }
     }
     
+    // MARK: - Mode de transport
+    private var transportSection: some View {
+        let modes: [TransportMode] = [.walking, .cycling, .driving]
+        return VStack(alignment: .leading, spacing: ItinerarlyTheme.Spacing.sm) {
+            Label("Mode de transport", systemImage: "car")
+                .font(.subheadline)
+            HStack(spacing: ItinerarlyTheme.Spacing.sm) {
+                ForEach(modes, id: \.self) { mode in
+                    let isSelected = (viewModel.filter.transportMode == mode)
+                    Button(action: { viewModel.updateTransportMode(mode) }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: mode.icon)
+                            Text(mode.displayName)
+                                .font(.caption)
+                        }
+                    }
+                    .padding(.horizontal, ItinerarlyTheme.Spacing.sm)
+                    .padding(.vertical, 6)
+                    .background(isSelected ? Color.purple : Color(.systemGray6))
+                    .foregroundColor(isSelected ? .white : .primary)
+                    .cornerRadius(8)
+                }
+            }
+        }
+    }
+    
     // MARK: - Bouton de génération
     private var generateButton: some View {
         Button(action: {
@@ -367,23 +474,23 @@ struct AdventurerView: View {
                 await viewModel.generateSurpriseAdventure()
             }
         }) {
-            HStack {
+            HStack(spacing: ItinerarlyTheme.Spacing.sm) {
                 if viewModel.isLoading {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                        .foregroundColor(.white)
+                    ProgressView().scaleEffect(0.8)
                 } else {
                     Image(systemName: "dice.fill")
+                        .font(.system(size: 16, weight: .semibold))
                 }
                 
                 Text(viewModel.isLoading ? "Génération..." : "Surprise me!")
-                    .fontWeight(.semibold)
+                    .font(.system(size: 14, weight: .medium))
             }
             .frame(maxWidth: .infinity)
-            .padding()
-            .background(Color.purple)
+            .padding(ItinerarlyTheme.Spacing.sm)
+            .frame(height: 36)
+            .background(ItinerarlyTheme.ModeColors.adventure.opacity(0.8))
             .foregroundColor(.white)
-            .cornerRadius(ItinerarlyTheme.CornerRadius.md)
+            .cornerRadius(ItinerarlyTheme.CornerRadius.sm)
         }
         .disabled(viewModel.isLoading)
     }
@@ -421,6 +528,63 @@ struct AdventurerView: View {
             return "\(hours)h\(minutes > 0 ? " \(minutes)min" : "")"
         } else {
             return "\(minutes)min"
+        }
+    }
+    
+    // MARK: - Localisation Helpers
+    private func getAddressFromCurrentLocation() {
+        guard FeatureFlags.enableUseCurrentLocation else { return }
+        wantsToUseCurrentLocation = true
+        isGettingAddress = true
+        
+        viewModel.locationManager.requestWhenInUseAuthorization()
+        viewModel.locationManager.startUpdatingLocation()
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15.0) {
+            if self.isGettingAddress {
+                self.isGettingAddress = false
+                self.wantsToUseCurrentLocation = false
+                self.viewModel.locationManager.stopUpdatingLocation()
+                if let last = self.viewModel.locationManager.location {
+                    self.viewModel.locationManager.reverseGeocode(last) { result in
+                        DispatchQueue.main.async {
+                            switch result {
+                            case .success(let address):
+                                self.viewModel.filter.address = address
+                            case .failure(_):
+                                let coordString = String(format: "%.6f, %.6f", last.coordinate.latitude, last.coordinate.longitude)
+                                self.viewModel.filter.address = coordString
+                            }
+                        }
+                    }
+                } else {
+                    self.showLocationError("Impossible d'obtenir votre position. Vérifiez que la localisation est activée et que vous êtes à l'extérieur.")
+                }
+            }
+        }
+    }
+    
+    private func showLocationError(_ message: String) {
+        locationAlertMessage = message
+        showingLocationAlert = true
+    }
+    
+    private var locationStatusText: String {
+        switch viewModel.locationManager.authorizationStatus {
+        case .notDetermined:
+            return "Appuyez pour autoriser la localisation"
+        case .denied, .restricted:
+            return "Ouvrir Réglages → Confidentialité → Localisation"
+        case .authorizedWhenInUse, .authorizedAlways:
+            if let location = viewModel.locationManager.location {
+                let accuracy = location.horizontalAccuracy
+                if accuracy < 5 { return "🟢 GPS haute précision (\(Int(accuracy))m)" }
+                if accuracy < 20 { return "🟡 GPS précis (\(Int(accuracy))m)" }
+                return "🟠 GPS approximatif (\(Int(accuracy))m)"
+            }
+            return "🔍 Recherche du signal GPS..."
+        @unknown default:
+            return "❓ Statut GPS inconnu"
         }
     }
 }

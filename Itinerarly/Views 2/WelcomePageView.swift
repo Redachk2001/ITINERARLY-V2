@@ -12,17 +12,22 @@ struct WelcomePageView: View {
     @State private var transitionProgress: Double = 0
     @State private var showLoadingElements = false
     @State private var showMainApp = false
+    @State private var showProfile = false
     
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                // Dynamic Gradient Background
-                AnimatedBackground()
+                // Soft beige animated background (cohérent avec le thème Itinerarly)
+                SoftBeigeBackground()
                     .ignoresSafeArea()
                 
                 // Floating background bubbles
                 FloatingBubblesBackground()
                     .opacity(animationOpacity * 0.2)
+
+                // Monuments flottants (léger parallax)
+                FloatingLandmarksView()
+                    .opacity(0.18)
                 
                 // Sparkles effect
                 if showSparkles {
@@ -31,6 +36,9 @@ struct WelcomePageView: View {
                 }
                 
                 VStack(spacing: 40) {
+                    // Espace supérieur réservé (la bulle profil est en overlay topTrailing)
+                    Spacer().frame(height: 10)
+
                     // Header avec animation
                     VStack(spacing: 16) {
                         // Wave animation emoji
@@ -88,6 +96,11 @@ struct WelcomePageView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .opacity(isTransitioning ? 0.3 : 1.0)
                 .blur(radius: isTransitioning ? 5 : 0)
+                .overlay(alignment: .topTrailing) {
+                    ProfileBubbleButton(action: { showProfile = true })
+                        .padding(.trailing, 16)
+                        .padding(.top, 26)
+                }
                 
                 // Transition dynamique overlay
                 if isTransitioning, let mode = selectedMode {
@@ -112,6 +125,9 @@ struct WelcomePageView: View {
             } else {
                 MainTabView()
             }
+        }
+        .sheet(isPresented: $showProfile) {
+            ProfileView()
         }
     }
     
@@ -237,7 +253,7 @@ struct AnimatedModeButton: View {
     @State private var showingSparkles = false
     @State private var rotationAngle: Double = 0
     @State private var pulseScale: CGFloat = 1.0
-    @State private var glowIntensity: Double = 0.5
+    @State private var glowIntensity: Double = 0.4
     
     var body: some View {
         Button(action: {
@@ -268,9 +284,9 @@ struct AnimatedModeButton: View {
                     .fill(
                         RadialGradient(
                             colors: [
-                                mode.primaryColor.opacity(0.9),
-                                mode.primaryColor.opacity(0.7),
-                                mode.primaryColor.opacity(1.0)
+                                mode.primaryColor.opacity(0.75),
+                                mode.primaryColor.opacity(0.5),
+                                mode.primaryColor.opacity(0.85)
                             ],
                             center: .topLeading,
                             startRadius: 10,
@@ -278,7 +294,7 @@ struct AnimatedModeButton: View {
                         )
                     )
                     .frame(width: 150, height: 150)
-                    .shadow(color: mode.primaryColor.opacity(0.4), radius: isPressed ? 25 : 15, x: 0, y: isPressed ? 15 : 8)
+                    .shadow(color: mode.primaryColor.opacity(0.30), radius: isPressed ? 18 : 10, x: 0, y: isPressed ? 12 : 6)
                     .scaleEffect(isPressed ? 1.15 : 1.0)
                     .rotationEffect(.degrees(rotationAngle))
                 
@@ -357,6 +373,36 @@ struct AnimatedModeButton: View {
     }
 }
 
+// MARK: - Profile Bubble (même style que les bulles de mode)
+struct ProfileBubbleButton: View {
+    let action: () -> Void
+    @State private var pulse: CGFloat = 1.0
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                // Minimaliste: cercle blanc discret
+                Circle()
+                    .fill(Color.white.opacity(0.95))
+                    .frame(width: 58, height: 58)
+                    .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 4)
+                    .scaleEffect(pulse)
+                Circle()
+                    .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                    .frame(width: 54, height: 54)
+                Image(systemName: "person.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(.primary)
+            }
+        }
+        .buttonStyle(ScaleButtonStyle())
+        .onAppear {
+            withAnimation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true)) {
+                pulse = 1.05
+            }
+        }
+    }
+}
+
 // MARK: - Custom Button Style
 struct ScaleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
@@ -378,6 +424,23 @@ struct AnimatedBackground: View {
                 gradientRotation = 360
             }
         }
+    }
+}
+
+// MARK: - Soft Beige Background (theme splash-like)
+struct SoftBeigeBackground: View {
+    @State private var animate = false
+    var body: some View {
+        LinearGradient(
+            colors: [
+                Color(#colorLiteral(red: 0.99, green: 0.97, blue: 0.94, alpha: 1)),
+                Color(#colorLiteral(red: 0.98, green: 0.93, blue: 0.88, alpha: 1))
+            ],
+            startPoint: animate ? .topLeading : .bottomTrailing,
+            endPoint: animate ? .bottomTrailing : .topLeading
+        )
+        .animation(.linear(duration: 18).repeatForever(autoreverses: true), value: animate)
+        .onAppear { animate = true }
     }
 }
 
@@ -433,6 +496,42 @@ struct FloatingBubblesBackground: View {
                 animatePosition.toggle()
             }
         }
+    }
+}
+
+// MARK: - Floating Landmarks Layer
+struct FloatingLandmarksView: View {
+    @State private var animate = false
+    private struct Landmark: Identifiable { let id = UUID(); let emoji: String; let start: CGPoint; let end: CGPoint; let size: CGFloat; let delay: Double }
+    private func randomLandmarks(in size: CGSize) -> [Landmark] {
+        let emojis = ["🗼", "🗽", "🏛️", "🕌", "⛩️", "🕍", "🗿", "🗿", "🏰", "🗺️"]
+        return (0..<8).map { i in
+            let start = CGPoint(x: CGFloat.random(in: 0...size.width), y: CGFloat.random(in: 0...size.height))
+            let end = CGPoint(x: CGFloat.random(in: 0...size.width), y: CGFloat.random(in: 0...size.height))
+            return Landmark(emoji: emojis[i % emojis.count], start: start, end: end, size: CGFloat.random(in: 24...36), delay: Double.random(in: 0...2))
+        }
+    }
+    var body: some View {
+        GeometryReader { geo in
+            let items = randomLandmarks(in: geo.size)
+            ZStack {
+                ForEach(items) { l in
+                    Text(l.emoji)
+                        .font(.system(size: l.size))
+                        .position(animate ? l.end : l.start)
+                        .opacity(0.85)
+                        .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
+                        .animation(
+                            .easeInOut(duration: Double.random(in: 10...16))
+                                .repeatForever(autoreverses: true)
+                                .delay(l.delay),
+                            value: animate
+                        )
+                }
+            }
+            .onAppear { animate = true }
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -655,7 +754,7 @@ struct TransitionLoadingView: View {
                     }
                 }
             }
-            .padding(ItinerarlyTheme.Spacing.xl)
+            .padding(ItinerarlyTheme.Spacing.lg)
         }
         .onAppear {
             startLoadingAnimations()

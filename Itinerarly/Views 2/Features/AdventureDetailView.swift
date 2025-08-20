@@ -554,26 +554,7 @@ struct AdventureActionButtons: View {
     }
 }
 
-struct StatChip: View {
-    let icon: String
-    let text: String
-    let color: Color
-    
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon)
-                .foregroundColor(color)
-                .font(.caption)
-            Text(text)
-                .font(.caption)
-                .fontWeight(.medium)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(color.opacity(0.1))
-        .cornerRadius(8)
-    }
-}
+
 
 struct AdventureLocationPin: View {
     let location: Location

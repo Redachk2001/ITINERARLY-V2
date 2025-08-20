@@ -40,6 +40,10 @@ struct SuggestionView: View {
     @EnvironmentObject var languageManager: LanguageManager
     @State private var showingLocationPicker = false
     @State private var selectedTimeIndex = 1 // 1h par défaut
+    @State private var isGettingAddress = false
+    @State private var wantsToUseCurrentLocation = false
+    @State private var showingLocationAlert = false
+    @State private var locationAlertMessage = ""
     
     var body: some View {
         NavigationView {
@@ -66,6 +70,48 @@ struct SuggestionView: View {
                 if let trip = viewModel.generatedTrip {
                     SuggestionResultsView(trip: trip)
                 }
+            }
+            .onReceive(viewModel.locationManager.$location) { location in
+                guard FeatureFlags.enableUseCurrentLocation else { return }
+                if let location = location, isGettingAddress {
+                    viewModel.locationManager.reverseGeocode(location) { result in
+                        DispatchQueue.main.async {
+                            self.isGettingAddress = false
+                            self.wantsToUseCurrentLocation = false
+                            self.viewModel.locationManager.stopUpdatingLocation()
+                            switch result {
+                            case .success(let address):
+                                self.viewModel.filter.address = address
+                            case .failure(_):
+                                let coordString = String(format: "%.6f, %.6f", location.coordinate.latitude, location.coordinate.longitude)
+                                self.viewModel.filter.address = coordString
+                            }
+                        }
+                    }
+                }
+            }
+            .onChange(of: viewModel.locationManager.authorizationStatus) { newStatus in
+                guard FeatureFlags.enableUseCurrentLocation else { return }
+                if wantsToUseCurrentLocation, (newStatus == .authorizedWhenInUse || newStatus == .authorizedAlways) {
+                    isGettingAddress = true
+                    viewModel.locationManager.startUpdatingLocation()
+                }
+                if wantsToUseCurrentLocation, (newStatus == .denied || newStatus == .restricted) {
+                    wantsToUseCurrentLocation = false
+                    isGettingAddress = false
+                    showLocationError("Veuillez autoriser l'accès à la localisation dans les Réglages de votre iPhone.")
+                }
+            }
+            .alert("Autorisation de localisation", isPresented: $showingLocationAlert) {
+                Button("Annuler") { }
+                Button("Ouvrir Réglages") {
+                    if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(settingsUrl)
+                    }
+                }
+                Button("Réessayer") { getAddressFromCurrentLocation() }
+            } message: {
+                Text(locationAlertMessage)
             }
         }
     }
@@ -99,26 +145,33 @@ struct SuggestionView: View {
     
     // MARK: - Filtres Section
     private var filtersSection: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 10) {
             // Adresse
             addressSection
             
             // Catégories
             categoriesSection
             
-            // Rayon
-            radiusSection
-            
-            // Temps disponible
-            timeSection
+            // Rayon + Temps déplacés sous Catégories
+            radiusTimeRow
             
             // Mode de transport
             transportSection
         }
-        .padding(ItinerarlyTheme.Spacing.lg)
+        .padding(ItinerarlyTheme.Spacing.md)
         .background(Color(.systemBackground))
-        .cornerRadius(ItinerarlyTheme.CornerRadius.md)
-        .shadow(color: .black.opacity(0.1), radius: 5, x: 0, y: 2)
+        .cornerRadius(ItinerarlyTheme.CornerRadius.sm)
+        .shadow(color: .black.opacity(0.05), radius: 3, x: 0, y: 1)
+    }
+
+    // MARK: - Rayon + Temps (2 colonnes)
+    private var radiusTimeRow: some View {
+        HStack(alignment: .top, spacing: ItinerarlyTheme.Spacing.sm) {
+            radiusSection
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            timeSection
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
     }
     
     // MARK: - Adresse Section
@@ -127,7 +180,7 @@ struct SuggestionView: View {
             Label(languageManager.translate("Point de départ"), systemImage: "mappin.and.ellipse")
                 .font(.headline)
             
-            HStack {
+            VStack(alignment: .leading, spacing: 8) {
                 LocationSearchField(
                     text: $viewModel.filter.address,
                     placeholder: "Votre adresse ou géolocalisation",
@@ -139,11 +192,51 @@ struct SuggestionView: View {
                     }
                 )
                 
-                Button(action: {
-                    showingLocationPicker = true
-                }) {
-                    Image(systemName: "location.fill")
-                        .foregroundColor(.blue)
+                if FeatureFlags.enableUseCurrentLocation {
+                    HStack(spacing: 12) {
+                        Button(action: { getAddressFromCurrentLocation() }) {
+                            HStack(spacing: 6) {
+                                if isGettingAddress {
+                                    ProgressView().scaleEffect(0.8)
+                                } else {
+                                    Image(systemName: "location.fill")
+                                }
+                                Text(isGettingAddress ? "Localisation..." : "Utiliser ma position")
+                            }
+                            .font(.caption)
+                            .foregroundColor(isGettingAddress ? .gray : ItinerarlyTheme.ModeColors.suggestions)
+                        }
+                        .disabled(false)
+
+                        Spacer(minLength: 12)
+
+                        Button(action: { showingLocationPicker = true }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "mappin.and.ellipse")
+                                Text("Choisir sur la carte")
+                            }
+                            .font(.caption)
+                            .foregroundColor(ItinerarlyTheme.ModeColors.suggestions)
+                        }
+                    }
+                }
+            }
+            .sheet(isPresented: $showingLocationPicker) {
+                MapPickerView(
+                    cityName: viewModel.filter.address.isEmpty ? "" : viewModel.filter.address,
+                    initialCoordinate: viewModel.locationManager.location?.coordinate,
+                    onPicked: { loc, address in
+                        viewModel.filter.address = address
+                    }
+                )
+            }
+            if FeatureFlags.enableUseCurrentLocation && isGettingAddress {
+                HStack(spacing: 6) {
+                    Image(systemName: (viewModel.locationManager.authorizationStatus == .authorizedWhenInUse || viewModel.locationManager.authorizationStatus == .authorizedAlways) ? "location.fill" : "location.slash")
+                        .foregroundColor((viewModel.locationManager.authorizationStatus == .authorizedWhenInUse || viewModel.locationManager.authorizationStatus == .authorizedAlways) ? .green : .red)
+                    Text(locationStatusText)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                 }
             }
         }
@@ -151,7 +244,7 @@ struct SuggestionView: View {
     
     // MARK: - Catégories Section
     private var categoriesSection: some View {
-        VStack(alignment: .leading, spacing: ItinerarlyTheme.Spacing.md) {
+        VStack(alignment: .leading, spacing: ItinerarlyTheme.Spacing.sm) {
             Label(languageManager.translate("Catégories d'activités"), systemImage: "grid.circle")
                 .font(.headline)
                 .foregroundColor(.primary)
@@ -174,47 +267,32 @@ struct SuggestionView: View {
     private var radiusSection: some View {
         VStack(alignment: .leading, spacing: ItinerarlyTheme.Spacing.md) {
             Label(languageManager.translate("Rayon de recherche"), systemImage: "location.circle")
-                .font(.headline)
+                .font(.subheadline)
                 .foregroundColor(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(height: 20, alignment: .leading)
             
-            // Boutons de sélection rapide - Design uniforme
-            HStack(spacing: ItinerarlyTheme.Spacing.sm) {
-                ForEach([2, 5, 10, 15, 20], id: \.self) { distance in
-                    Button(action: {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                            viewModel.updateMaxRadius(Double(distance))
-                        }
-                    }) {
-                        Text("\(distance)km")
-                            .font(ItinerarlyTheme.Typography.caption1)
-                            .fontWeight(.medium)
-                            .foregroundColor(viewModel.filter.maxRadius == Double(distance) ? .white : ItinerarlyTheme.ModeColors.suggestions)
-                            .padding(.horizontal, ItinerarlyTheme.Spacing.md)
-                            .padding(.vertical, ItinerarlyTheme.Spacing.sm)
-                            .background(viewModel.filter.maxRadius == Double(distance) ? ItinerarlyTheme.ModeColors.suggestions : Color(.systemGray6))
-                            .cornerRadius(ItinerarlyTheme.CornerRadius.sm)
-                    }
-                }
-            }
+            // Chips rapides supprimés pour un design plus compact
             
             // Slider simplifié sans boutons +/-
             VStack(spacing: ItinerarlyTheme.Spacing.sm) {
                 HStack {
                     Text("1 km")
-                        .font(ItinerarlyTheme.Typography.caption1)
+                        .font(ItinerarlyTheme.Typography.caption2)
                         .foregroundColor(.secondary)
                     
                     Spacer()
                     
                     Text("\(Int(viewModel.filter.maxRadius)) km")
-                        .font(ItinerarlyTheme.Typography.subheadline)
+                        .font(ItinerarlyTheme.Typography.caption1)
                         .fontWeight(.semibold)
                         .foregroundColor(ItinerarlyTheme.ModeColors.suggestions)
                     
                     Spacer()
                     
                     Text("30 km")
-                        .font(ItinerarlyTheme.Typography.caption1)
+                        .font(ItinerarlyTheme.Typography.caption2)
                         .foregroundColor(.secondary)
                 }
                 
@@ -256,8 +334,18 @@ struct SuggestionView: View {
                             viewModel.updateMaxRadius(clampedValue)
                         }
                     }
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                let x = max(0, min(trackWidth, value.location.x))
+                                let newValue = 1 + (x / trackWidth) * 29
+                                let steppedValue = round(newValue)
+                                let clampedValue = max(1, min(30, steppedValue))
+                                viewModel.updateMaxRadius(clampedValue)
+                            }
+                    )
                 }
-                .frame(height: 40)
+                .frame(height: 28)
             }
         }
     }
@@ -266,47 +354,32 @@ struct SuggestionView: View {
     private var timeSection: some View {
         VStack(alignment: .leading, spacing: ItinerarlyTheme.Spacing.md) {
             Label(languageManager.translate("Temps disponible"), systemImage: "clock")
-                .font(.headline)
+                .font(.subheadline)
                 .foregroundColor(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(height: 20, alignment: .leading)
             
-            // Boutons de sélection rapide - Design uniforme
-            HStack(spacing: ItinerarlyTheme.Spacing.sm) {
-                ForEach([30, 60, 90, 120, 180], id: \.self) { minutes in
-                    Button(action: {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                            viewModel.updateAvailableTime(TimeInterval(minutes * 60))
-                        }
-                    }) {
-                        Text("\(minutes)min")
-                            .font(ItinerarlyTheme.Typography.caption1)
-                            .fontWeight(.medium)
-                            .foregroundColor(viewModel.filter.availableTime == TimeInterval(minutes * 60) ? .white : ItinerarlyTheme.ModeColors.suggestions)
-                            .padding(.horizontal, ItinerarlyTheme.Spacing.md)
-                            .padding(.vertical, ItinerarlyTheme.Spacing.sm)
-                            .background(viewModel.filter.availableTime == TimeInterval(minutes * 60) ? ItinerarlyTheme.ModeColors.suggestions : Color(.systemGray6))
-                            .cornerRadius(ItinerarlyTheme.CornerRadius.sm)
-                    }
-                }
-            }
+            // Chips rapides supprimés pour un design plus compact
             
             // Slider simplifié sans boutons +/-
             VStack(spacing: ItinerarlyTheme.Spacing.sm) {
                 HStack {
                     Text("30min")
-                        .font(ItinerarlyTheme.Typography.caption1)
+                        .font(ItinerarlyTheme.Typography.caption2)
                         .foregroundColor(.secondary)
                     
                     Spacer()
                     
                     Text(formatTime(viewModel.filter.availableTime))
-                        .font(ItinerarlyTheme.Typography.subheadline)
+                        .font(ItinerarlyTheme.Typography.caption1)
                         .fontWeight(.semibold)
                         .foregroundColor(ItinerarlyTheme.ModeColors.suggestions)
                     
                     Spacer()
                     
                     Text("12h")
-                        .font(ItinerarlyTheme.Typography.caption1)
+                        .font(ItinerarlyTheme.Typography.caption2)
                         .foregroundColor(.secondary)
                 }
                 
@@ -348,8 +421,18 @@ struct SuggestionView: View {
                             viewModel.updateAvailableTime(clampedValue)
                         }
                     }
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                let x = max(0, min(trackWidth, value.location.x))
+                                let newValue = 1800 + (x / trackWidth) * 41400
+                                let steppedValue = round(newValue / 1800) * 1800
+                                let clampedValue = max(1800, min(43200, steppedValue))
+                                viewModel.updateAvailableTime(clampedValue)
+                            }
+                    )
                 }
-                .frame(height: 40)
+                .frame(height: 28)
             }
         }
     }
@@ -362,27 +445,20 @@ struct SuggestionView: View {
                 .foregroundColor(.primary)
             
             HStack(spacing: ItinerarlyTheme.Spacing.sm) {
-                Spacer()
-                
-                TransportModeButton(
-                    mode: .walking,
-                    isSelected: viewModel.filter.transportMode == .walking,
-                    action: { viewModel.updateTransportMode(.walking) }
-                )
-                
-                TransportModeButton(
-                    mode: .cycling,
-                    isSelected: viewModel.filter.transportMode == .cycling,
-                    action: { viewModel.updateTransportMode(.cycling) }
-                )
-                
-                TransportModeButton(
-                    mode: .driving,
-                    isSelected: viewModel.filter.transportMode == .driving,
-                    action: { viewModel.updateTransportMode(.driving) }
-                )
-                
-                Spacer()
+                ForEach([TransportMode.walking, .cycling, .driving], id: \.self) { mode in
+                    Button(action: { viewModel.updateTransportMode(mode) }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: mode.icon)
+                            Text(mode.displayName)
+                                .font(.caption)
+                        }
+                        .padding(.horizontal, ItinerarlyTheme.Spacing.sm)
+                        .padding(.vertical, 6)
+                        .background(viewModel.filter.transportMode == mode ? ItinerarlyTheme.ModeColors.suggestions : Color(.systemGray6))
+                        .foregroundColor(viewModel.filter.transportMode == mode ? .white : .primary)
+                        .cornerRadius(8)
+                    }
+                }
             }
         }
     }
@@ -390,27 +466,29 @@ struct SuggestionView: View {
     // MARK: - Bouton de recherche
     private var searchButton: some View {
         Button(action: {
+            print("🎯 Bouton cliqué ! Catégories sélectionnées: \(viewModel.selectedCategories)")
+            print("🎯 Filtre adresse: '\(viewModel.filter.address)'")
             Task {
                 await viewModel.findSuggestions()
             }
         }) {
-            HStack(spacing: ItinerarlyTheme.Spacing.md) {
+            HStack(spacing: ItinerarlyTheme.Spacing.sm) {
                 if viewModel.isLoading {
-                    ItinerarlyLoadingView(mode: .suggestions, message: "Recherche...")
-                        .scaleEffect(0.6)
+                    ProgressView().scaleEffect(0.8)
                 } else {
                     Image(systemName: "sparkles")
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: 16, weight: .semibold))
                 }
                 
                 Text(viewModel.isLoading ? "Recherche..." : "Suggest me something cool!")
-                    .font(ItinerarlyTheme.Typography.buttonText)
+                    .font(ItinerarlyTheme.Typography.subheadline)
             }
             .frame(maxWidth: .infinity)
-            .padding(ItinerarlyTheme.Spacing.lg)
-            .background(ItinerarlyTheme.ModeColors.suggestions)
+            .padding(ItinerarlyTheme.Spacing.sm)
+            .frame(height: 36)
+            .background(ItinerarlyTheme.ModeColors.suggestions.opacity(0.8))
             .foregroundColor(.white)
-            .cornerRadius(ItinerarlyTheme.CornerRadius.md)
+            .cornerRadius(ItinerarlyTheme.CornerRadius.sm)
         }
         .disabled(viewModel.isLoading || viewModel.selectedCategories.isEmpty)
         .opacity(viewModel.selectedCategories.isEmpty ? 0.6 : 1.0)
@@ -466,6 +544,63 @@ struct SuggestionView: View {
             return "\(hours)h\(minutes > 0 ? " \(minutes)min" : "")"
         } else {
             return "\(minutes)min"
+        }
+    }
+    
+    // MARK: - Localisation Helpers
+    private func getAddressFromCurrentLocation() {
+        guard FeatureFlags.enableUseCurrentLocation else { return }
+        wantsToUseCurrentLocation = true
+        isGettingAddress = true
+        
+        viewModel.locationManager.requestWhenInUseAuthorization()
+        viewModel.locationManager.startUpdatingLocation()
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15.0) {
+            if self.isGettingAddress {
+                self.isGettingAddress = false
+                self.wantsToUseCurrentLocation = false
+                self.viewModel.locationManager.stopUpdatingLocation()
+                if let last = self.viewModel.locationManager.location {
+                    self.viewModel.locationManager.reverseGeocode(last) { result in
+                        DispatchQueue.main.async {
+                            switch result {
+                            case .success(let address):
+                                self.viewModel.filter.address = address
+                            case .failure(_):
+                                let coordString = String(format: "%.6f, %.6f", last.coordinate.latitude, last.coordinate.longitude)
+                                self.viewModel.filter.address = coordString
+                            }
+                        }
+                    }
+                } else {
+                    self.showLocationError("Impossible d'obtenir votre position. Vérifiez que la localisation est activée et que vous êtes à l'extérieur.")
+                }
+            }
+        }
+    }
+    
+    private func showLocationError(_ message: String) {
+        locationAlertMessage = message
+        showingLocationAlert = true
+    }
+    
+    private var locationStatusText: String {
+        switch viewModel.locationManager.authorizationStatus {
+        case .notDetermined:
+            return "Appuyez pour autoriser la localisation"
+        case .denied, .restricted:
+            return "Ouvrir Réglages → Confidentialité → Localisation"
+        case .authorizedWhenInUse, .authorizedAlways:
+            if let location = viewModel.locationManager.location {
+                let accuracy = location.horizontalAccuracy
+                if accuracy < 5 { return "🟢 GPS haute précision (\(Int(accuracy))m)" }
+                if accuracy < 20 { return "🟡 GPS précis (\(Int(accuracy))m)" }
+                return "🟠 GPS approximatif (\(Int(accuracy))m)"
+            }
+            return "🔍 Recherche du signal GPS..."
+        @unknown default:
+            return "❓ Statut GPS inconnu"
         }
     }
 }
@@ -621,6 +756,12 @@ struct SuggestionCard: View {
                 }
                 .font(.caption)
                 .foregroundColor(.blue)
+
+                Button("TikTok") {
+                    openInTikTok()
+                }
+                .font(.caption)
+                .foregroundColor(.pink)
                 
                 Spacer()
                 
@@ -661,6 +802,21 @@ struct SuggestionCard: View {
         let mapItem = MKMapItem(placemark: MKPlacemark(coordinate: coordinate))
         mapItem.name = suggestion.location.name
         mapItem.openInMaps(launchOptions: [:])
+    }
+
+    private func openInTikTok() {
+        let query = suggestion.location.name
+        guard !query.isEmpty else { return }
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        // Essayer d'ouvrir l'app TikTok
+        if let appURL = URL(string: "tiktok://search?q=\(encoded)"), UIApplication.shared.canOpenURL(appURL) {
+            UIApplication.shared.open(appURL)
+            return
+        }
+        // Fallback web
+        if let webURL = URL(string: "https://www.tiktok.com/search?q=\(encoded)") {
+            UIApplication.shared.open(webURL)
+        }
     }
 }
 

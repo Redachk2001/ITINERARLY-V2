@@ -13,7 +13,10 @@ class GuidedToursViewModel: ObservableObject {
     @Published var startAddress: String?
     
     private let apiService = APIService.shared
+    private let imageProvider = ImageProviderService.shared
     private var cancellables = Set<AnyCancellable>()
+    private var usedTourImageURLs: Set<String> = []
+    private let poiService = OpenTripMapService()
     
     func loadTours(for city: City) {
         // Permettre le rechargement si on change de ville, si tours est vide, ou si on sort du mode aléatoire
@@ -179,6 +182,7 @@ class GuidedToursViewModel: ObservableObject {
     }
     
     // MARK: - Chargement avec position de départ
+    @MainActor
     func loadToursWithLocation(for city: City, startLocation: CLLocation?, startAddress: String? = nil) {
         currentCity = city
         isLoading = true
@@ -201,13 +205,11 @@ class GuidedToursViewModel: ObservableObject {
             print("📍 Adresse de départ: \(address)")
         }
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            self.loadMockTours(for: city)
-            self.optimizeToursForUserLocation()
-            self.isLoading = false
-        }
+        // Charger des POI réels et insérer le tour Nature pour le Luxembourg
+        self.loadToursFromPOIs(for: city)
     }
     
+    @MainActor
     func loadRandomTourWithLocation(for city: City, startLocation: CLLocation?, startAddress: String? = nil) {
         currentCity = city
         isLoading = true
@@ -251,6 +253,2877 @@ class GuidedToursViewModel: ObservableObject {
         // Générer des tours pour toutes les villes
         tours = createMockToursForCity(city)
         errorMessage = nil
+        // Réinitialiser le set anti-duplication d'images à chaque chargement
+        usedTourImageURLs.removeAll()
+        // Enrichir avec des images via API (asynchrone)
+        enrichToursWithImages()
+        // Appliquer les contraintes globales de tours guidés
+        applyGlobalGuidedTourConstraints(for: city)
+    }
+
+    // Casablanca: tours curés fixes (3, 5 et 7 arrêts)
+    private func buildCasablancaFixedVariants() -> [GuidedTour] {
+        let city: City = .casablanca
+        func L(_ id: String, _ name: String, _ address: String, _ lat: Double, _ lon: Double, _ cat: LocationCategory) -> Location {
+            return Location(id: id, name: name, address: address, latitude: lat, longitude: lon, category: cat, description: nil, imageURL: nil, rating: 4.7, openingHours: nil, recommendedDuration: nil, visitTips: nil)
+        }
+        func S(_ i: Int, _ loc: Location) -> TourStop {
+            return TourStop(id: "casa_fixed_\(i)_\(loc.id)", location: loc, order: i, audioGuideText: generateAudioText(for: loc, in: city, index: i), audioGuideURL: nil, visitDuration: 1200, tips: nil, distanceFromPrevious: nil, travelTimeFromPrevious: nil, estimatedArrivalTime: nil, estimatedDepartureTime: nil)
+        }
+
+        // Facile – 3 arrêts
+        let t1Stops: [TourStop] = [
+            S(1, L("hassan2", "Mosquée Hassan II", "Boulevard Sidi Mohammed Ben Abdallah, Casablanca 20000, Morocco", 33.6085, -7.6327, .religious)),
+            S(2, L("mohv", "Place Mohammed V", "Place Mohammed V, Casablanca 20000, Morocco", 33.5936, -7.6021, .culture)),
+            S(3, L("ancienne_medina", "Médina de Casablanca", "Rue Tahar Sebti, Casablanca 20250, Morocco", 33.5920, -7.6148, .historical))
+        ]
+        let t1 = GuidedTour(id: "casablanca_fixed_easy_3", title: "Centre & Hassan II", city: city, description: "Essentiels autour de la mosquée et des places (3 arrêts).", duration: t1Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .easy, stops: t1Stops, imageURL: nil, rating: 4.8, price: nil)
+
+        // Modéré – 5 arrêts
+        let t2Stops: [TourStop] = [
+            S(1, L("hassan2_2", "Mosquée Hassan II", "Boulevard Sidi Mohammed Ben Abdallah, Casablanca 20000, Morocco", 33.6085, -7.6327, .religious)),
+            S(2, L("nations_unies", "Place des Nations Unies", "Place des Nations Unies, Casablanca 20250, Morocco", 33.5949, -7.6188, .culture)),
+            S(3, L("parc_ligue", "Parc de la Ligue Arabe", "Boulevard Moulay Youssef, Casablanca 20250, Morocco", 33.5881, -7.6221, .nature)),
+            S(4, L("marche_central", "Marché Central", "Rue Chaouia, Casablanca 20250, Morocco", 33.5930, -7.6180, .culture)),
+            S(5, L("ain_diab", "Aïn Diab – Corniche", "Ain Diab, Casablanca 20000, Morocco", 33.5882, -7.6651, .nature))
+        ]
+        let t2 = GuidedTour(id: "casablanca_fixed_moderate_5", title: "Centre & Corniche – Nations Unies", city: city, description: "Places, parc et front de mer (5 arrêts).", duration: t2Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .moderate, stops: t2Stops, imageURL: nil, rating: 4.7, price: nil)
+
+        // Difficile – 7 arrêts
+        let t3Stops: [TourStop] = [
+            S(1, L("hassan2_3", "Mosquée Hassan II", "Boulevard Sidi Mohammed Ben Abdallah, Casablanca 20000, Morocco", 33.6085, -7.6327, .religious)),
+            S(2, L("mohv_3", "Place Mohammed V", "Place Mohammed V, Casablanca 20000, Morocco", 33.5936, -7.6021, .culture)),
+            S(3, L("sacre_coeur_casa", "Cathédrale du Sacré‑Cœur", "Rue d'Alger, Casablanca 20250, Morocco", 33.58799, -7.62133, .historical)),
+            S(4, L("parc_ligue3", "Parc de la Ligue Arabe", "Boulevard Moulay Youssef, Casablanca 20250, Morocco", 33.5881, -7.6221, .nature)),
+            S(5, L("musee_juda", "Musée du Judaïsme Marocain", "81 Rue Chasseur Jules Gros, Casablanca 20250, Morocco", 33.5523, -7.6394, .museum)),
+            S(6, L("ain_diab3", "Aïn Diab – Corniche", "Ain Diab, Casablanca 20000, Morocco", 33.5882, -7.6651, .nature)),
+            S(7, L("twin_center", "Twin Center (vue ext.)", "Boulevard Al Massira Al Khadra, Casablanca 20250, Morocco", 33.533333, -7.583333, .culture))
+        ]
+        let t3 = GuidedTour(id: "casablanca_fixed_challenging_7", title: "Casablanca – Mosquée, centre & Corniche", city: city, description: "Emblèmes religieux, places et front de mer (7 arrêts).", duration: t3Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .challenging, stops: t3Stops, imageURL: nil, rating: 4.7, price: nil)
+
+        return [t1, t2, t3]
+    }
+    // Bordeaux: tours curés fixes (3, 5 et 7 arrêts)
+    private func buildBordeauxFixedVariants() -> [GuidedTour] {
+        let city: City = .bordeaux
+        func L(_ id: String, _ name: String, _ address: String, _ lat: Double, _ lon: Double, _ cat: LocationCategory) -> Location {
+            return Location(id: id, name: name, address: address, latitude: lat, longitude: lon, category: cat, description: nil, imageURL: nil, rating: 4.7, openingHours: nil, recommendedDuration: nil, visitTips: nil)
+        }
+        func S(_ i: Int, _ loc: Location) -> TourStop {
+            return TourStop(id: "bdx_fixed_\(i)_\(loc.id)", location: loc, order: i, audioGuideText: generateAudioText(for: loc, in: city, index: i), audioGuideURL: nil, visitDuration: 1200, tips: nil, distanceFromPrevious: nil, travelTimeFromPrevious: nil, estimatedArrivalTime: nil, estimatedDepartureTime: nil)
+        }
+
+        // Facile – 3 arrêts
+        let t1Stops: [TourStop] = [
+            S(1, L("bourse", "Place de la Bourse & Miroir d'eau", "Place de la Bourse, 33000 Bordeaux, France", 44.8417, -0.5696, .culture)),
+            S(2, L("saint_andre", "Cathédrale Saint‑André", "Place Pey‑Berland, 33000 Bordeaux, France", 44.8384, -0.5790, .religious)),
+            S(3, L("grosse_cloche", "Grosse Cloche", "Rue Saint‑James, 33000 Bordeaux, France", 44.8334, -0.5728, .historical))
+        ]
+        let t1 = GuidedTour(id: "bordeaux_fixed_easy_3", title: "Centre classique & Miroir d'eau", city: city, description: "Essentiels rive gauche (3 arrêts).", duration: t1Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .easy, stops: t1Stops, imageURL: nil, rating: 4.8, price: nil)
+
+        // Modéré – 5 arrêts
+        let t2Stops: [TourStop] = [
+            S(1, L("quinconces", "Place des Quinconces", "Place des Quinconces, 33000 Bordeaux, France", 44.8467, -0.5733, .culture)),
+            S(2, L("bourse2", "Place de la Bourse & Miroir d'eau", "Place de la Bourse, 33000 Bordeaux, France", 44.8417, -0.5696, .culture)),
+            S(3, L("saint_pierre", "Quartier Saint‑Pierre", "Place Saint‑Pierre, 33000 Bordeaux, France", 44.8410, -0.5738, .culture)),
+            S(4, L("peys_berland", "Cathédrale Saint‑André & Tour Pey‑Berland", "Place Pey‑Berland, 33000 Bordeaux, France", 44.8384, -0.5790, .religious)),
+            S(5, L("porte_cailhau", "Porte Cailhau", "Place du Palais, 33000 Bordeaux, France", 44.8389, -0.5707, .historical))
+        ]
+        let t2 = GuidedTour(id: "bordeaux_fixed_moderate_5", title: "Quinconces, Bourse & Saint‑Pierre", city: city, description: "Places majestueuses et vieilles rues (5 arrêts).", duration: t2Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .moderate, stops: t2Stops, imageURL: nil, rating: 4.7, price: nil)
+
+        // Difficile – 7 arrêts
+        let t3Stops: [TourStop] = [
+            S(1, L("bourse3", "Place de la Bourse & Miroir d'eau", "Place de la Bourse, 33000 Bordeaux, France", 44.8417, -0.5696, .culture)),
+            S(2, L("citeduvin", "Cité du Vin (vue/extérieur)", "134 Quai de Bacalan, 33300 Bordeaux, France", 44.8625, -0.5500, .museum)),
+            S(3, L("pont_pierre", "Pont de Pierre", "Pont de Pierre, 33000 Bordeaux, France", 44.8382, -0.5646, .historical)),
+            S(4, L("gross_cloche3", "Grosse Cloche", "Rue Saint‑James, 33000 Bordeaux, France", 44.8334, -0.5728, .historical)),
+            S(5, L("saint_michel", "Basilique Saint‑Michel (flèche)", "Place Meynard, 33800 Bordeaux, France", 44.8333, -0.5686, .religious)),
+            S(6, L("jardin_public", "Jardin Public", "Cours de Verdun, 33000 Bordeaux, France", 44.8490, -0.5763, .nature)),
+            S(7, L("chartrons", "Quartier des Chartrons", "Rue Notre Dame, 33000 Bordeaux, France", 44.8530, -0.5715, .culture))
+        ]
+        let t3 = GuidedTour(id: "bordeaux_fixed_challenging_7", title: "Rive gauche & bacalan – Cité du Vin", city: city, description: "Entre centre historique et rive des bassins (7 arrêts).", duration: t3Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .challenging, stops: t3Stops, imageURL: nil, rating: 4.7, price: nil)
+
+        return [t1, t2, t3]
+    }
+    // Lyon: tours curés fixes (3, 5 et 7 arrêts)
+    private func buildLyonFixedVariants() -> [GuidedTour] {
+        let city: City = .lyon
+        func L(_ id: String, _ name: String, _ address: String, _ lat: Double, _ lon: Double, _ cat: LocationCategory) -> Location {
+            return Location(id: id, name: name, address: address, latitude: lat, longitude: lon, category: cat, description: nil, imageURL: nil, rating: 4.7, openingHours: nil, recommendedDuration: nil, visitTips: nil)
+        }
+        func S(_ i: Int, _ loc: Location) -> TourStop {
+            return TourStop(id: "lyon_fixed_\(i)_\(loc.id)", location: loc, order: i, audioGuideText: generateAudioText(for: loc, in: city, index: i), audioGuideURL: nil, visitDuration: 1200, tips: nil, distanceFromPrevious: nil, travelTimeFromPrevious: nil, estimatedArrivalTime: nil, estimatedDepartureTime: nil)
+        }
+
+        // Facile – 3 arrêts
+        let t1Stops: [TourStop] = [
+            S(1, L("bellecour", "Place Bellecour", "Place Bellecour, 69002 Lyon, France", 45.7578, 4.8320, .culture)),
+            S(2, L("vieux_lyon", "Vieux Lyon & traboules", "Place du Change, 69005 Lyon, France", 45.7631, 4.8275, .historical)),
+            S(3, L("saone", "Quais de Saône – Saint‑Georges", "Quai Fulchiron, 69005 Lyon, France", 45.7572, 4.8229, .culture))
+        ]
+        let t1 = GuidedTour(id: "lyon_fixed_easy_3", title: "Presqu'île & Vieux Lyon", city: city, description: "Essentiels entre Bellecour et les traboules (3 arrêts).", duration: t1Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .easy, stops: t1Stops, imageURL: nil, rating: 4.8, price: nil)
+
+        // Modéré – 5 arrêts
+        let t2Stops: [TourStop] = [
+            S(1, L("fourviere", "Basilique de Fourvière – Belvédère", "8 Place de Fourvière, 69005 Lyon, France", 45.7622, 4.8225, .religious)),
+            S(2, L("theatres_romains", "Théâtres romains", "17 Rue Cléberg, 69005 Lyon, France", 45.7594, 4.8206, .historical)),
+            S(3, L("vieux_lyon2", "Vieux Lyon & traboules", "Rue Saint‑Jean, 69005 Lyon, France", 45.7632, 4.8270, .historical)),
+            S(4, L("termeaux", "Place des Terreaux & Hôtel de Ville", "Place des Terreaux, 69001 Lyon, France", 45.7673, 4.8340, .culture)),
+            S(5, L("opera", "Opéra de Lyon", "1 Place de la Comédie, 69001 Lyon, France", 45.7675, 4.8357, .culture))
+        ]
+        let t2 = GuidedTour(id: "lyon_fixed_moderate_5", title: "Fourvière, Vieux Lyon & Terreaux", city: city, description: "Belvédère, antiquité et places emblématiques (5 arrêts).", duration: t2Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .moderate, stops: t2Stops, imageURL: nil, rating: 4.7, price: nil)
+
+        // Difficile – 7 arrêts (Parcs & quais)
+        let t3Stops: [TourStop] = [
+            S(1, L("fourviere2", "Basilique de Fourvière – Belvédère", "8 Place de Fourvière, 69005 Lyon, France", 45.7622, 4.8225, .religious)),
+            S(2, L("amphitheatre", "Amphithéâtre des Trois Gaules", "Rue Lucien Sportisse, 69001 Lyon, France", 45.7713, 4.8296, .historical)),
+            S(3, L("fresque", "Fresque des Lyonnais", "2 Rue de la Martinière, 69001 Lyon, France", 45.7679, 4.8273, .culture)),
+            S(4, L("terreaux2", "Place des Terreaux", "Place des Terreaux, 69001 Lyon, France", 45.7673, 4.8340, .culture)),
+            S(5, L("tete_or", "Parc de la Tête d'Or", "Parc de la Tête d'Or, 69006 Lyon, France", 45.7769, 4.8539, .nature)),
+            S(6, L("berges_rhone", "Berges du Rhône", "Quais du Rhône, 69006 Lyon, France", 45.7668, 4.8455, .nature)),
+            S(7, L("confluences", "Musée des Confluences & esplanade", "86 Quai Perrache, 69002 Lyon, France", 45.7335, 4.8196, .museum))
+        ]
+        let t3 = GuidedTour(id: "lyon_fixed_challenging_7", title: "Belvédères, places & parcs – Tête d'Or", city: city, description: "De Fourvière aux berges du Rhône (7 arrêts).", duration: t3Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .challenging, stops: t3Stops, imageURL: nil, rating: 4.7, price: nil)
+
+        return [t1, t2, t3]
+    }
+    // Marseille: tours curés fixes (3, 5 et 7 arrêts)
+    private func buildMarseilleFixedVariants() -> [GuidedTour] {
+        let city: City = .marseille
+        func L(_ id: String, _ name: String, _ address: String, _ lat: Double, _ lon: Double, _ cat: LocationCategory) -> Location {
+            return Location(id: id, name: name, address: address, latitude: lat, longitude: lon, category: cat, description: nil, imageURL: nil, rating: 4.7, openingHours: nil, recommendedDuration: nil, visitTips: nil)
+        }
+        func S(_ i: Int, _ loc: Location) -> TourStop {
+            return TourStop(id: "mrs_fixed_\(i)_\(loc.id)", location: loc, order: i, audioGuideText: generateAudioText(for: loc, in: city, index: i), audioGuideURL: nil, visitDuration: 1200, tips: nil, distanceFromPrevious: nil, travelTimeFromPrevious: nil, estimatedArrivalTime: nil, estimatedDepartureTime: nil)
+        }
+
+        // Facile – 3 arrêts
+        let t1Stops: [TourStop] = [
+            S(1, L("vieux_port", "Vieux‑Port", "Vieux‑Port, 13001 Marseille, France", 43.2965, 5.3698, .culture)),
+            S(2, L("panier", "Le Panier", "Quartier du Panier, 13002 Marseille, France", 43.3004, 5.3686, .culture)),
+            S(3, L("major", "Cathédrale de la Major", "Place de la Major, 13002 Marseille, France", 43.2996, 5.3611, .religious))
+        ]
+        let t1 = GuidedTour(id: "marseille_fixed_easy_3", title: "Vieux‑Port & Panier", city: city, description: "Essentiels autour du Vieux‑Port (3 arrêts).", duration: t1Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .easy, stops: t1Stops, imageURL: nil, rating: 4.8, price: nil)
+
+        // Modéré – 5 arrêts
+        let t2Stops: [TourStop] = [
+            S(1, L("vieux_port2", "Vieux‑Port", "Vieux‑Port, 13001 Marseille, France", 43.2965, 5.3698, .culture)),
+            S(2, L("mucem", "MuCEM", "1 Esplanade du J4, 13002 Marseille, France", 43.2966, 5.3607, .museum)),
+            S(3, L("fort_sj", "Fort Saint‑Jean", "Prom. Louis Brauquier, 13002 Marseille, France", 43.2959, 5.3600, .historical)),
+            S(4, L("longchamp", "Palais Longchamp", "Bd Jardin Zoologique, 13004 Marseille, France", 43.3050, 5.3950, .historical)),
+            S(5, L("corniche", "Corniche Kennedy", "Corniche Président John Fitzgerald Kennedy, 13007 Marseille, France", 43.2823, 5.3546, .nature))
+        ]
+        let t2 = GuidedTour(id: "marseille_fixed_moderate_5", title: "Musées & palais – Vieux‑Port, MuCEM", city: city, description: "Du J4 à Longchamp en passant par la Corniche (5 arrêts).", duration: t2Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .moderate, stops: t2Stops, imageURL: nil, rating: 4.7, price: nil)
+
+        // Difficile – 7 arrêts (sunset Notre‑Dame de la Garde / Corniche)
+        let t3Stops: [TourStop] = [
+            S(1, L("vieux_port3", "Vieux‑Port", "Vieux‑Port, 13001 Marseille, France", 43.2965, 5.3698, .culture)),
+            S(2, L("ndgarde", "Basilique Notre‑Dame de la Garde – Sunset", "Rue Fort du Sanctuaire, 13006 Marseille, France", 43.2841, 5.3698, .religious)),
+            S(3, L("mucem3", "MuCEM", "1 Esplanade du J4, 13002 Marseille, France", 43.2966, 5.3607, .museum)),
+            S(4, L("major3", "Cathédrale de la Major", "Place de la Major, 13002 Marseille, France", 43.2996, 5.3611, .religious)),
+            S(5, L("chateau_if", "Château d'If (vue/embarcadère)", "Départ Vieux‑Port, 13001 Marseille, France", 43.2965, 5.3698, .historical)),
+            S(6, L("corniche3", "Corniche Kennedy", "Corniche Président John Fitzgerald Kennedy, 13007 Marseille, France", 43.2823, 5.3546, .nature)),
+            S(7, L("panier3", "Le Panier", "Quartier du Panier, 13002 Marseille, France", 43.3004, 5.3686, .culture))
+        ]
+        let t3 = GuidedTour(id: "marseille_fixed_challenging_7", title: "Marseille panoramique – Notre‑Dame & Corniche", city: city, description: "Emblèmes religieux, musées et vues mer (7 arrêts).", duration: t3Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .challenging, stops: t3Stops, imageURL: nil, rating: 4.7, price: nil)
+
+        return [t1, t2, t3]
+    }
+    // Paris: tours curés fixes (3, 5 et 7 arrêts) avec coucher de soleil au Trocadéro
+    private func buildParisFixedVariants() -> [GuidedTour] {
+        let city: City = .paris
+        func L(_ id: String, _ name: String, _ address: String, _ lat: Double, _ lon: Double, _ cat: LocationCategory) -> Location {
+            return Location(id: id, name: name, address: address, latitude: lat, longitude: lon, category: cat, description: nil, imageURL: nil, rating: 4.7, openingHours: nil, recommendedDuration: nil, visitTips: nil)
+        }
+        func S(_ i: Int, _ loc: Location) -> TourStop {
+            return TourStop(id: "paris_fixed_\(i)_\(loc.id)", location: loc, order: i, audioGuideText: generateAudioText(for: loc, in: city, index: i), audioGuideURL: nil, visitDuration: 1200, tips: nil, distanceFromPrevious: nil, travelTimeFromPrevious: nil, estimatedArrivalTime: nil, estimatedDepartureTime: nil)
+        }
+
+        // Facile – 3 arrêts (Île et Louvre)
+        let t1Stops: [TourStop] = [
+            S(1, L("notredame", "Cathédrale Notre‑Dame", "6 Parvis Notre‑Dame, 75004 Paris, France", 48.8530, 2.3499, .religious)),
+            S(2, L("sainte_chapelle", "Sainte‑Chapelle", "8 Boulevard du Palais, 75001 Paris, France", 48.8554, 2.3450, .religious)),
+            S(3, L("louvre", "Musée du Louvre", "Rue de Rivoli, 75001 Paris, France", 48.8606, 2.3376, .museum))
+        ]
+        let t1 = GuidedTour(id: "paris_fixed_easy_3", title: "Île de la Cité & Louvre", city: city, description: "Parcours express au cœur historique (3 arrêts).", duration: t1Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .easy, stops: t1Stops, imageURL: nil, rating: 4.8, price: nil)
+
+        // Modéré – 5 arrêts (Axe historique)
+        let t2Stops: [TourStop] = [
+            S(1, L("concorde", "Place de la Concorde", "Place de la Concorde, 75008 Paris, France", 48.8656, 2.3211, .culture)),
+            S(2, L("tuileries", "Jardin des Tuileries", "Place de la Concorde, 75001 Paris, France", 48.8635, 2.3270, .nature)),
+            S(3, L("louvre2", "Musée du Louvre", "Rue de Rivoli, 75001 Paris, France", 48.8606, 2.3376, .museum)),
+            S(4, L("opera", "Opéra Garnier", "Place de l'Opéra, 75009 Paris, France", 48.8719, 2.3316, .culture)),
+            S(5, L("arc", "Arc de Triomphe", "Place Charles de Gaulle, 75008 Paris, France", 48.8738, 2.2950, .historical))
+        ]
+        let t2 = GuidedTour(id: "paris_fixed_moderate_5", title: "Axe historique – Concorde, Louvre & Opéra", city: city, description: "Grandes places, musées et symbole national (5 arrêts).", duration: t2Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .moderate, stops: t2Stops, imageURL: nil, rating: 4.7, price: nil)
+
+        // Difficile – 7 arrêts (Rive gauche & Tour Eiffel, sunset Trocadéro)
+        let t3Stops: [TourStop] = [
+            S(1, L("invalides", "Hôtel des Invalides", "129 Rue de Grenelle, 75007 Paris, France", 48.8566, 2.3126, .historical)),
+            S(2, L("orsay", "Musée d'Orsay", "1 Rue de la Légion d'Honneur, 75007 Paris, France", 48.8600, 2.3266, .museum)),
+            S(3, L("assemblee", "Assemblée Nationale", "126 Rue de l'Université, 75007 Paris, France", 48.8610, 2.3185, .historical)),
+            S(4, L("trocadero", "Esplanade du Trocadéro – Sunset", "Place du Trocadéro et du 11 Novembre, 75016 Paris, France", 48.8629, 2.2872, .nature)),
+            S(5, L("eiffel", "Tour Eiffel", "Champ de Mars, 5 Avenue Anatole France, 75007 Paris, France", 48.8584, 2.2945, .historical)),
+            S(6, L("pont_alexIII", "Pont Alexandre III", "Pont Alexandre III, 75008 Paris, France", 48.8654, 2.3130, .historical)),
+            S(7, L("orangerie", "Musée de l'Orangerie", "Jardin des Tuileries, 75001 Paris, France", 48.8638, 2.3225, .museum))
+        ]
+        let t3 = GuidedTour(id: "paris_fixed_challenging_7", title: "Rive gauche & Tour Eiffel – Sunset au Trocadéro", city: city, description: "Panoramas, musées et monuments (7 arrêts).", duration: t3Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .challenging, stops: t3Stops, imageURL: nil, rating: 4.7, price: nil)
+
+        // Thématique – Montmartre (5 arrêts)
+        let t4Stops: [TourStop] = [
+            S(1, L("sacre_coeur", "Basilique du Sacré‑Cœur", "35 Rue du Chevalier de la Barre, 75018 Paris, France", 48.8867, 2.3431, .religious)),
+            S(2, L("place_tert", "Place du Tertre", "Place du Tertre, 75018 Paris, France", 48.8861, 2.3400, .culture)),
+            S(3, L("mur_je_taime", "Mur des Je t'aime (Square Jehan Rictus)", "Square Jehan Rictus, Place des Abbesses, 75018 Paris, France", 48.8845, 2.3376, .culture)),
+            S(4, L("abbesses", "Place des Abbesses", "Place des Abbesses, 75018 Paris, France", 48.8848, 2.3380, .culture)),
+            S(5, L("moulin_rouge", "Moulin Rouge (photo)", "82 Boulevard de Clichy, 75018 Paris, France", 48.8841, 2.3325, .culture))
+        ]
+        let t4 = GuidedTour(id: "paris_fixed_montmartre_5", title: "Montmartre – Sacré‑Cœur & artistes", city: city, description: "Quartier des artistes, ruelles et panoramas (5 arrêts).", duration: t4Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .moderate, stops: t4Stops, imageURL: nil, rating: 4.7, price: nil)
+
+        return [t1, t2, t3, t4]
+    }
+    // Nice: tours curés fixes (3, 5 et 7 arrêts) incluant Rauba Capeu pour le coucher de soleil
+    private func buildNiceFixedVariants() -> [GuidedTour] {
+        let city: City = .nice
+        func L(_ id: String, _ name: String, _ address: String, _ lat: Double, _ lon: Double, _ cat: LocationCategory) -> Location {
+            return Location(id: id, name: name, address: address, latitude: lat, longitude: lon, category: cat, description: nil, imageURL: nil, rating: 4.7, openingHours: nil, recommendedDuration: nil, visitTips: nil)
+        }
+        func S(_ i: Int, _ loc: Location) -> TourStop {
+            return TourStop(id: "nice_fixed_\(i)_\(loc.id)", location: loc, order: i, audioGuideText: generateAudioText(for: loc, in: city, index: i), audioGuideURL: nil, visitDuration: 1200, tips: nil, distanceFromPrevious: nil, travelTimeFromPrevious: nil, estimatedArrivalTime: nil, estimatedDepartureTime: nil)
+        }
+
+        // Facile – 3 arrêts
+        let t1Stops: [TourStop] = [
+            S(1, L("vieille_ville", "Vieille Ville", "Cours Saleya, 06300 Nice, France", 43.6954, 7.2756, .culture)),
+            S(2, L("cours_saleya", "Cours Saleya (Marché)", "Cours Saleya, 06300 Nice, France", 43.6950, 7.2750, .culture)),
+            S(3, L("colline_chateau", "Colline du Château – Belvédère", "Montée du Château, 06300 Nice, France", 43.6959, 7.2797, .nature))
+        ]
+        let t1 = GuidedTour(id: "nice_fixed_easy_3", title: "Vieille Ville & belvédère", city: city, description: "Parcours express entre marché, ruelles et vue panoramique (3 arrêts).", duration: t1Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .easy, stops: t1Stops, imageURL: nil, rating: 4.8, price: nil)
+
+        // Modéré – 5 arrêts
+        let t2Stops: [TourStop] = [
+            S(1, L("massena", "Place Masséna", "Place Masséna, 06000 Nice, France", 43.6976, 7.2707, .culture)),
+            S(2, L("vieille_ville2", "Vieille Ville", "Rue de la Préfecture, 06300 Nice, France", 43.6963, 7.2747, .culture)),
+            S(3, L("cours_saleya2", "Cours Saleya (Marché)", "Cours Saleya, 06300 Nice, France", 43.6950, 7.2750, .culture)),
+            S(4, L("promenade", "Promenade des Anglais", "Promenade des Anglais, 06000 Nice, France", 43.6953, 7.2651, .culture)),
+            S(5, L("rauba_capeu", "Rauba Capeu – Coucher de soleil", "Quai Rauba Capeu, 06300 Nice, France", 43.6929, 7.2872, .nature))
+        ]
+        let t2 = GuidedTour(id: "nice_fixed_moderate_5", title: "Belvédères & places – Promenade & Rauba Capeu", city: city, description: "Découverte étendue entre places, mer et panorama sunset (5 arrêts).", duration: t2Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .moderate, stops: t2Stops, imageURL: nil, rating: 4.7, price: nil)
+
+        // Difficile – 7 arrêts
+        let t3Stops: [TourStop] = [
+            S(1, L("massena3", "Place Masséna", "Place Masséna, 06000 Nice, France", 43.6976, 7.2707, .culture)),
+            S(2, L("vieille_ville3", "Vieille Ville", "Rue de la Préfecture, 06300 Nice, France", 43.6963, 7.2747, .culture)),
+            S(3, L("colline_chateau3", "Colline du Château – Belvédère", "Montée du Château, 06300 Nice, France", 43.6959, 7.2797, .nature)),
+            S(4, L("promenade3", "Promenade des Anglais", "Promenade des Anglais, 06000 Nice, France", 43.6953, 7.2651, .culture)),
+            S(5, L("quai_etats", "Quai des États‑Unis", "Quai des États‑Unis, 06300 Nice, France", 43.6945, 7.2772, .culture)),
+            S(6, L("musee_matisse", "Musée Matisse (Cimiez)", "164 Avenue des Arènes de Cimiez, 06000 Nice, France", 43.7204, 7.2760, .museum)),
+            S(7, L("monastere_cimiez", "Monastère de Cimiez & jardins", "Place du Monastère, 06000 Nice, France", 43.7209, 7.2777, .religious))
+        ]
+        let t3 = GuidedTour(id: "nice_fixed_challenging_7", title: "Promenade & Cimiez – Panoramas & musées", city: city, description: "Entre mer, belvédères et quartier de Cimiez (7 arrêts).", duration: t3Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .challenging, stops: t3Stops, imageURL: nil, rating: 4.7, price: nil)
+
+        return [t1, t2, t3]
+    }
+    // MARK: - Générer 3 à 5 tours depuis des POIs (API gratuite via MapKit)
+    @MainActor
+    func loadToursFromPOIs(for city: City) {
+        currentCity = city
+        isLoading = true
+        errorMessage = nil
+        isRandomMode = false
+
+        Task {
+            let center = getBaseCoordinates(for: city)
+            let centerLocation = CLLocation(latitude: center.lat, longitude: center.lng)
+            // Filtrage global: monuments/POI culturels, historiques, religieux; nature seulement si site emblématique (parcs/jardins connus)
+            let categories: [LocationCategory] = [.historical, .museum, .culture, .religious, .nature]
+            do {
+                let places = try await poiService.searchPlaces(categories: categories, near: centerLocation, radius: 7.0)
+                let filteredPlaces = places.filter { isAllowedPOI($0, in: city) }
+                await MainActor.run {
+                    if city == .berlin {
+                        self.tours = self.buildBerlinFixedVariants()
+                    } else if city == .brussels {
+                        self.tours = self.buildBrusselsVariants(from: filteredPlaces)
+                    } else if city == .bruges {
+                        self.tours = self.buildBrugesFixedVariants()
+                    } else if city == .nice {
+                        self.tours = self.buildNiceFixedVariants()
+                    } else if city == .paris {
+                        self.tours = self.buildParisFixedVariants()
+                    } else if city == .marseille {
+                        self.tours = self.buildMarseilleFixedVariants()
+                    } else if city == .lyon {
+                        self.tours = self.buildLyonFixedVariants()
+                    } else if city == .bordeaux {
+                        self.tours = self.buildBordeauxFixedVariants()
+                    } else if city == .casablanca {
+                        self.tours = self.buildCasablancaFixedVariants()
+                    } else if city == .tangier {
+                        self.tours = self.buildTangierFixedVariants()
+                    } else if city == .marrakech {
+                        self.tours = self.buildMarrakechFixedVariants()
+                    } else if city == .luxembourg {
+                        self.tours = self.buildLuxembourgFixedVariants()
+                    } else if city == .barcelona {
+                        self.tours = self.buildBarcelonaFixedVariants()
+                    } else if city == .madrid {
+                        self.tours = self.buildMadridFixedVariants()
+                    } else if city == .london {
+                        self.tours = self.buildLondonFixedVariants()
+                    } else if city == .rome {
+                        self.tours = self.buildRomeFixedVariants()
+                    } else if city == .milan {
+                        self.tours = self.buildMilanFixedVariants()
+                    } else if city == .amsterdam {
+                        self.tours = self.buildAmsterdamFixedVariants()
+                    } else if city == .istanbul {
+                        self.tours = self.buildIstanbulFixedVariants()
+                    } else if city == .newYork {
+                        self.tours = self.buildNewYorkFixedVariants()
+                    } else if city == .prague {
+                        self.tours = self.buildPragueFixedVariants()
+                    } else {
+                        // Villes non prises en charge par les tours guidés curés
+                        self.tours = []
+                        self.errorMessage = "Ville non supportée pour les tours guidés curés."
+                    }
+                    // Si malgré tout aucun tour n'est généré (data vide après filtrage), fallback mock
+                    if self.tours.isEmpty {
+                        self.loadMockTours(for: city)
+                    }
+                    // Ajouter systématiquement un mini‑tour 3 arrêts si absent
+                    self.ensureMiniTour(for: city, from: filteredPlaces)
+                    // Appliquer les contraintes globales
+                    self.applyGlobalGuidedTourConstraints(for: city)
+                    self.usedTourImageURLs.removeAll()
+                    self.enrichToursWithImages()
+                    self.isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                    // Fallback mock en cas d'échec
+                    self.loadMockTours(for: city)
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+
+    // MARK: - Contraintes globales pour Tours guidés
+    private func applyGlobalGuidedTourConstraints(for city: City) {
+        let allowedCategories: Set<LocationCategory> = [.historical, .museum, .religious, .culture, .nature]
+        let bannedKeywords = ["mall", "shopping", "center", "centre commercial", "casino", "amusement", "club", "bar", "night", "aquapark", "zoo", "aquarium"]
+        let center = CLLocation(latitude: getBaseCoordinates(for: city).lat, longitude: getBaseCoordinates(for: city).lng)
+
+        func isTouristic(_ loc: Location) -> Bool {
+            if !allowedCategories.contains(loc.category) { return false }
+            let n = loc.name.lowercased()
+            if bannedKeywords.contains(where: { n.contains($0) }) { return false }
+            return true
+        }
+
+        func clampAudio(_ text: String, for location: Location, index: Int) -> String {
+            let minChars = 30 * 10
+            let maxChars = 120 * 10
+            var t = text
+            if t.count < minChars {
+                let filler = buildAIAudioGuideText(for: location, in: city, index: index)
+                t += " " + filler
+            }
+            if t.count > maxChars {
+                let endIndex = t.index(t.startIndex, offsetBy: maxChars)
+                let truncated = String(t[..<endIndex])
+                if let lastDot = truncated.range(of: ".", options: .backwards) {
+                    t = String(truncated[..<lastDot.upperBound])
+                } else {
+                    t = truncated + "…"
+                }
+            }
+            return t
+        }
+
+        var normalized: [GuidedTour] = []
+        for tour in tours {
+            // Filtrer et nettoyer les arrêts
+            var stops = tour.stops.filter { isTouristic($0.location) }
+            if stops.count > 7 {
+                // Garder les 7 plus proches du centre
+                stops = stops.sorted { center.distance(from: $0.location.clLocation) < center.distance(from: $1.location.clLocation) }
+                stops = Array(stops.prefix(7))
+            }
+            // Rejeter si moins de 3
+            if stops.count < 3 { continue }
+
+            // Canonicaliser adresses et audio
+            let updatedStops: [TourStop] = stops.enumerated().map { (i, s) in
+                let canonical = self.canonicalAddress(for: s.location.name, in: city)
+                let updatedLoc: Location = {
+                    if let addr = canonical, addr != s.location.address {
+                        return Location(
+                            id: s.location.id,
+                            name: s.location.name,
+                            address: addr,
+                            latitude: s.location.latitude,
+                            longitude: s.location.longitude,
+                            category: s.location.category,
+                            description: s.location.description,
+                            imageURL: s.location.imageURL,
+                            rating: s.location.rating,
+                            openingHours: s.location.openingHours,
+                            recommendedDuration: s.location.recommendedDuration,
+                            visitTips: s.location.visitTips
+                        )
+                    }
+                    return s.location
+                }()
+                let audio = clampAudio(s.audioGuideText.isEmpty ? generateAudioText(for: updatedLoc, in: city, index: i+1) : s.audioGuideText, for: updatedLoc, index: i+1)
+                return TourStop(
+                    id: s.id,
+                    location: updatedLoc,
+                    order: i + 1,
+                    audioGuideText: audio,
+                    audioGuideURL: s.audioGuideURL,
+                    visitDuration: s.visitDuration,
+                    tips: s.tips,
+                    distanceFromPrevious: s.distanceFromPrevious,
+                    travelTimeFromPrevious: s.travelTimeFromPrevious,
+                    estimatedArrivalTime: s.estimatedArrivalTime,
+                    estimatedDepartureTime: s.estimatedDepartureTime
+                )
+            }
+
+            let duration = updatedStops.reduce(0) { $0 + $1.visitDuration }
+            let normalizedTour = GuidedTour(
+                id: tour.id,
+                title: tour.title,
+                city: city,
+                description: tour.description,
+                duration: duration,
+                difficulty: tour.difficulty,
+                stops: updatedStops,
+                imageURL: tour.imageURL,
+                rating: tour.rating,
+                price: tour.price,
+                startLocation: tour.startLocation,
+                startAddress: tour.startAddress,
+                optimizedStops: tour.optimizedStops,
+                totalDistance: tour.totalDistance,
+                estimatedTravelTime: tour.estimatedTravelTime
+            )
+            normalized.append(normalizedTour)
+        }
+        tours = normalized
+    }
+
+    // Regroupe les POIs en 3 à 5 tours cohérents
+    private func buildTours(from places: [Location], for city: City) -> [GuidedTour] {
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+
+        // Trier par proximité du centre
+        let center = CLLocation(latitude: getBaseCoordinates(for: city).lat, longitude: getBaseCoordinates(for: city).lng)
+        let sorted = places.sorted { a, b in
+            center.distance(from: a.clLocation) < center.distance(from: b.clLocation)
+        }
+
+        // Nombre de tours: entre 3 et 5 selon quantité
+        let targetCount = max(3, min(5, sorted.count / 5))
+        let chunkSize = max(4, sorted.count / max(1, targetCount))
+
+        var toursResult: [GuidedTour] = []
+        var index = 0
+        var tourIdx = 1
+        while index < sorted.count && toursResult.count < targetCount {
+            let slice = Array(sorted.dropFirst(index).prefix(chunkSize))
+            if slice.isEmpty { break }
+            let stops: [TourStop] = slice.enumerated().map { (i, loc) in
+                TourStop(
+                    id: "poi_\(tourIdx)_\(i)_\(loc.id)",
+                    location: loc,
+                    order: i,
+                    audioGuideText: getAudioGuideText(for: loc.name, in: city, index: i+1),
+                    audioGuideURL: nil,
+                    visitDuration: loc.recommendedDuration ?? 1800,
+                    tips: loc.visitTips?.first ?? "Profitez de la découverte !",
+                    distanceFromPrevious: nil,
+                    travelTimeFromPrevious: nil,
+                    estimatedArrivalTime: nil,
+                    estimatedDepartureTime: nil
+                )
+            }
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            let title = generateTourTitle(for: city, stops: stops, index: tourIdx)
+            let tour = GuidedTour(
+                id: "poi_tour_\(city.rawValue)_\(tourIdx)",
+                title: title,
+                city: city,
+                description: "Une sélection des lieux incontournables de \(city.displayName).",
+                duration: duration,
+                difficulty: .easy,
+                stops: stops,
+                imageURL: nil,
+                rating: Double.random(in: 4.2...4.9),
+                price: nil
+            )
+            toursResult.append(tour)
+            index += slice.count
+            tourIdx += 1
+        }
+        return toursResult
+    }
+
+    // Berlin: variantes 3/5/7 arrêts avec difficultés et rayons variés
+    private func buildBerlinVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .berlin
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let center = CLLocation(latitude: getBaseCoordinates(for: city).lat, longitude: getBaseCoordinates(for: city).lng)
+        let sorted = places.sorted { a, b in center.distance(from: a.clLocation) < center.distance(from: b.clLocation) }
+
+        let profiles: [(count: Int, diff: TourDifficulty, title: String)] = [
+            (3, .easy, "Berlin express – Brandenbourg & Reichstag"),
+            (5, .moderate, "Berlin classique – Mitte & mémoire"),
+            (7, .challenging, "Berlin intense – Est/Ouest & East Side Gallery")
+        ]
+
+        var tours: [GuidedTour] = []
+        for (idx, p) in profiles.enumerated() {
+            let selected: [Location]
+            switch p.count {
+            case 3:
+                selected = Array(sorted.prefix(3))
+            case 5:
+                let head = Array(sorted.prefix(3))
+                let extra = Array(sorted.dropFirst(3).prefix(2))
+                selected = head + extra
+            default:
+                // 7 arrêts: mix proche/éloigné sans dépasser 7
+                let near = Array(sorted.prefix(4))
+                let far = Array(sorted.dropFirst(4).prefix(6))
+                selected = Array((near + far).prefix(7))
+            }
+
+            let stops = selected.enumerated().map { (i, loc) in
+                let updatedLoc: Location = {
+                    if let canonical = self.canonicalAddress(for: loc.name, in: city) {
+                        return Location(
+                            id: loc.id,
+                            name: loc.name,
+                            address: canonical,
+                            latitude: loc.latitude,
+                            longitude: loc.longitude,
+                            category: loc.category,
+                            description: loc.description,
+                            imageURL: loc.imageURL,
+                            rating: loc.rating,
+                            openingHours: loc.openingHours,
+                            recommendedDuration: loc.recommendedDuration,
+                            visitTips: loc.visitTips
+                        )
+                    }
+                    return loc
+                }()
+                return TourStop(
+                    id: "berlin_var_\(p.count)_\(i)_\(loc.id)",
+                    location: updatedLoc,
+                    order: i + 1,
+                    audioGuideText: generateAudioText(for: updatedLoc, in: city, index: i + 1),
+                    audioGuideURL: nil,
+                    visitDuration: loc.recommendedDuration ?? (p.count <= 3 ? 1800 : 1500),
+                    tips: loc.visitTips?.first ?? "Prenez le temps d'observer les détails.",
+                    distanceFromPrevious: nil,
+                    travelTimeFromPrevious: nil,
+                    estimatedArrivalTime: nil,
+                    estimatedDepartureTime: nil
+                )
+            }
+
+            let duration = stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }
+            let tour = GuidedTour(
+                id: "berlin_profile_\(idx+1)_\(p.count)",
+                title: p.title,
+                city: city,
+                description: "Itinéraire de \(p.count) arrêts à Berlin (\(p.diff.displayName)).",
+                duration: duration,
+                difficulty: p.diff,
+                stops: stops,
+                imageURL: nil,
+                rating: Double.random(in: 4.3...4.9),
+                price: nil
+            )
+            tours.append(tour)
+        }
+        // Tours thématiques supplémentaires pour atteindre ≥4
+        func makeTour(_ bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let count = min(max(3, bucket.count), 7)
+            let stops = Array(bucket.prefix(count)).enumerated().map { (i, loc) in
+                let updatedLoc: Location = {
+                    if let canonical = self.canonicalAddress(for: loc.name, in: city) {
+                        return Location(
+                            id: loc.id,
+                            name: loc.name,
+                            address: canonical,
+                            latitude: loc.latitude,
+                            longitude: loc.longitude,
+                            category: loc.category,
+                            description: loc.description,
+                            imageURL: loc.imageURL,
+                            rating: loc.rating,
+                            openingHours: loc.openingHours,
+                            recommendedDuration: loc.recommendedDuration,
+                            visitTips: loc.visitTips
+                        )
+                    }
+                    return loc
+                }()
+                return TourStop(id: "berlin_extra_\(difficulty.rawValue)_\(i)_\(loc.id)", location: updatedLoc, order: i+1,
+                         audioGuideText: generateAudioText(for: updatedLoc, in: city, index: i+1), audioGuideURL: nil,
+                         visitDuration: loc.recommendedDuration ?? 1500, tips: loc.visitTips?.first ?? "Réservez Reichstag/Île aux Musées.",
+                         distanceFromPrevious: nil, travelTimeFromPrevious: nil, estimatedArrivalTime: nil, estimatedDepartureTime: nil)
+            }
+            let duration = stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }
+            return GuidedTour(id: "berlin_additional_\(difficulty.rawValue)_\(count)", title: baseTitle, city: city,
+                              description: "Itinéraire thématique à Berlin.", duration: duration, difficulty: difficulty,
+                              stops: stops, imageURL: nil, rating: Double.random(in: 4.4...4.9), price: nil)
+        }
+        let museums = sorted.filter { $0.name.lowercased().contains("museum") || $0.name.lowercased().contains("insel") }
+        if let tMuseums = makeTour(museums, baseTitle: "Île aux Musées & grands musées", difficulty: .moderate) { tours.append(tMuseums) }
+        return tours
+    }
+
+    // Berlin: tours curés fixes (3, 5 et 7 arrêts)
+    private func buildBerlinFixedVariants() -> [GuidedTour] {
+        let city: City = .berlin
+        func L(_ id: String, _ name: String, _ address: String, _ lat: Double, _ lon: Double, _ cat: LocationCategory) -> Location {
+            return Location(id: id, name: name, address: address, latitude: lat, longitude: lon, category: cat, description: nil, imageURL: nil, rating: 4.7, openingHours: nil, recommendedDuration: nil, visitTips: nil)
+        }
+        func S(_ i: Int, _ loc: Location) -> TourStop {
+            return TourStop(id: "berlin_fixed_\(i)_\(loc.id)", location: loc, order: i, audioGuideText: generateAudioText(for: loc, in: city, index: i), audioGuideURL: nil, visitDuration: 1200, tips: nil, distanceFromPrevious: nil, travelTimeFromPrevious: nil, estimatedArrivalTime: nil, estimatedDepartureTime: nil)
+        }
+
+        // Facile – 3 arrêts
+        let t1Stops: [TourStop] = [
+            S(1, L("brandenburg", "Brandenburger Tor", "Pariser Platz, 10117 Berlin, Germany", 52.5163, 13.3777, .historical)),
+            S(2, L("reichstag", "Reichstag", "Platz der Republik 1, 11011 Berlin, Germany", 52.5186, 13.3762, .historical)),
+            S(3, L("gendarmenmarkt", "Gendarmenmarkt", "Gendarmenmarkt, 10117 Berlin, Germany", 52.5138, 13.3928, .culture))
+        ]
+        let t1 = GuidedTour(
+            id: "berlin_fixed_easy_3",
+            title: "Berlin express – Brandenbourg & Reichstag",
+            city: city,
+            description: "Parcours express au cœur de Mitte (3 arrêts).",
+            duration: t1Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration },
+            difficulty: .easy,
+            stops: t1Stops,
+            imageURL: nil,
+            rating: 4.8,
+            price: nil
+        )
+
+        // Modéré – 5 arrêts
+        let t2Stops: [TourStop] = [
+            S(1, L("brandenburg2", "Brandenburger Tor", "Pariser Platz, 10117 Berlin, Germany", 52.5163, 13.3777, .historical)),
+            S(2, L("reichstag2", "Reichstag", "Platz der Republik 1, 11011 Berlin, Germany", 52.5186, 13.3762, .historical)),
+            S(3, L("museumsinsel", "Museumsinsel", "Museumsinsel, 10117 Berlin, Germany", 52.5169, 13.4010, .museum)),
+            S(4, L("alex", "Alexanderplatz", "Alexanderplatz, 10178 Berlin, Germany", 52.5219, 13.4132, .culture)),
+            S(5, L("checkpoint", "Checkpoint Charlie", "Friedrichstraße 43-45, 10117 Berlin, Germany", 52.5076, 13.3904, .historical))
+        ]
+        let t2 = GuidedTour(
+            id: "berlin_fixed_moderate_5",
+            title: "Berlin classique – Mitte & mémoire",
+            city: city,
+            description: "Essentiels de Mitte et lieux de mémoire (5 arrêts).",
+            duration: t2Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration },
+            difficulty: .moderate,
+            stops: t2Stops,
+            imageURL: nil,
+            rating: 4.7,
+            price: nil
+        )
+
+        // Difficile – 7 arrêts (coucher de soleil sur la Spree)
+        let t3Stops: [TourStop] = [
+            S(1, L("brandenburg3", "Brandenburger Tor", "Pariser Platz, 10117 Berlin, Germany", 52.5163, 13.3777, .historical)),
+            S(2, L("reichstag3", "Reichstag", "Platz der Republik 1, 11011 Berlin, Germany", 52.5186, 13.3762, .historical)),
+            S(3, L("gendarmenmarkt3", "Gendarmenmarkt", "Gendarmenmarkt, 10117 Berlin, Germany", 52.5138, 13.3928, .culture)),
+            S(4, L("museumsinsel3", "Museumsinsel", "Museumsinsel, 10117 Berlin, Germany", 52.5169, 13.4010, .museum)),
+            S(5, L("alex3", "Alexanderplatz", "Alexanderplatz, 10178 Berlin, Germany", 52.5219, 13.4132, .culture)),
+            S(6, L("potsdamer", "Potsdamer Platz", "Potsdamer Platz, 10117 Berlin, Germany", 52.5096, 13.3750, .culture)),
+            S(7, L("eastside", "East Side Gallery", "Mühlenstraße, 10243 Berlin, Germany", 52.5050, 13.4397, .culture))
+        ]
+        let t3 = GuidedTour(
+            id: "berlin_fixed_challenging_7",
+            title: "Berlin intense – Est/Ouest & East Side Gallery",
+            city: city,
+            description: "De Mitte aux berges de la Spree pour le coucher de soleil (7 arrêts).",
+            duration: t3Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration },
+            difficulty: .challenging,
+            stops: t3Stops,
+            imageURL: nil,
+            rating: 4.7,
+            price: nil
+        )
+
+        return [t1, t2, t3]
+    }
+
+    // Normalisation des adresses canoniques pour Apple Maps
+    private func canonicalAddress(for name: String, in city: City) -> String? {
+        switch city {
+        case .berlin:
+            switch name {
+            case "Brandenburger Tor": return "Pariser Platz, 10117 Berlin, Germany"
+            case "Reichstag": return "Platz der Republik 1, 11011 Berlin, Germany"
+            case "Alexanderplatz": return "Alexanderplatz, 10178 Berlin, Germany"
+            case "Checkpoint Charlie": return "Friedrichstraße 43-45, 10117 Berlin, Germany"
+            case "Museumsinsel": return "Museumsinsel, 10117 Berlin, Germany"
+            case "Potsdamer Platz": return "Potsdamer Platz, 10117 Berlin, Germany"
+            case "Kurfürstendamm": return "Kurfürstendamm, 10719 Berlin, Germany"
+            case "Gendarmenmarkt": return "Gendarmenmarkt, 10117 Berlin, Germany"
+            case "Tiergarten": return "Tiergarten, 10785 Berlin, Germany"
+            case "East Side Gallery": return "Mühlenstraße, 10243 Berlin, Germany"
+            default: return nil
+            }
+        case .brussels:
+            switch name {
+            case "Grand-Place", "Grand-Place de Bruxelles": return "Grand-Place, 1000 Bruxelles, Belgium"
+            case "Manneken Pis": return "Rue de l'Étuve 31, 1000 Bruxelles, Belgium"
+            case "Galeries Royales Saint-Hubert": return "Galerie du Roi 5, 1000 Bruxelles, Belgium"
+            case "Musée Horta": return "25 Rue Américaine, 1060 Saint-Gilles, Belgium"
+            case "Place du Grand Sablon": return "Place du Grand Sablon, 1000 Bruxelles, Belgium"
+            case "Place Poelaert – Panorama/Roue", "Place Poelaert": return "Place Poelaert, 1000 Bruxelles, Belgium"
+            case "Avenue Louise": return "Avenue Louise, 1050 Bruxelles, Belgium"
+            case "Atomium": return "Square de l'Atomium, 1020 Bruxelles, Belgium"
+            case "Parc Royal": return "Parc de Bruxelles, 1000 Bruxelles, Belgium"
+            case "Parc du Cinquantenaire": return "Avenue de la Joyeuse Entrée 1, 1040 Bruxelles, Belgium"
+            default: return nil
+            }
+        case .bruges:
+            switch name {
+            case "Markt & Beffroi (ext.)": return "Markt, 8000 Brugge, Belgium"
+            case "Burg & Basilique du Saint‑Sang (ext.)": return "Burg 15, 8000 Brugge, Belgium"
+            case "Rozenhoedkaai (vue canaux)": return "Rozenhoedkaai, 8000 Brugge, Belgium"
+            case "Musée Groeninge (ext.)": return "Dijver 12, 8000 Brugge, Belgium"
+            case "Béguinage & Minnewater (vue)": return "Begijnhof 30, 8000 Brugge, Belgium"
+            case "Cathédrale Saint‑Sauveur (ext.)": return "Sint‑Salvatorskoorstraat 8, 8000 Brugge, Belgium"
+            case "Hôpital Saint‑Jean (ext.)": return "Mariastraat 38, 8000 Brugge, Belgium"
+            case "Hôtel de Ville (Stadhuis) (ext.)": return "Burg 12, 8000 Brugge, Belgium"
+            default: return nil
+            }
+        case .nice:
+            switch name {
+            case "Vieille Ville": return "Rue de la Préfecture, 06300 Nice, France"
+            case "Cours Saleya (Marché)": return "Cours Saleya, 06300 Nice, France"
+            case "Colline du Château – Belvédère": return "Montée du Château, 06300 Nice, France"
+            case "Place Masséna": return "Place Masséna, 06000 Nice, France"
+            case "Promenade des Anglais": return "Promenade des Anglais, 06000 Nice, France"
+            case "Rauba Capeu – Coucher de soleil": return "Quai Rauba Capeu, 06300 Nice, France"
+            case "Quai des États‑Unis": return "Quai des États‑Unis, 06300 Nice, France"
+            case "Musée Matisse (Cimiez)": return "164 Avenue des Arènes de Cimiez, 06000 Nice, France"
+            case "Monastère de Cimiez & jardins": return "Place du Monastère, 06000 Nice, France"
+            default: return nil
+            }
+        case .paris:
+            switch name {
+            case "Basilique du Sacré‑Cœur": return "35 Rue du Chevalier de la Barre, 75018 Paris, France"
+            case "Place du Tertre": return "Place du Tertre, 75018 Paris, France"
+            case "Mur des Je t'aime (Square Jehan Rictus)": return "Square Jehan Rictus, Place des Abbesses, 75018 Paris, France"
+            case "Place des Abbesses": return "Place des Abbesses, 75018 Paris, France"
+            case "Moulin Rouge (photo)": return "82 Boulevard de Clichy, 75018 Paris, France"
+            case "Cathédrale Notre‑Dame": return "6 Parvis Notre‑Dame, 75004 Paris, France"
+            case "Sainte‑Chapelle": return "8 Boulevard du Palais, 75001 Paris, France"
+            case "Musée du Louvre": return "Rue de Rivoli, 75001 Paris, France"
+            case "Place de la Concorde": return "Place de la Concorde, 75008 Paris, France"
+            case "Jardin des Tuileries": return "Place de la Concorde, 75001 Paris, France"
+            case "Opéra Garnier": return "Place de l'Opéra, 75009 Paris, France"
+            case "Arc de Triomphe": return "Place Charles de Gaulle, 75008 Paris, France"
+            case "Hôtel des Invalides": return "129 Rue de Grenelle, 75007 Paris, France"
+            case "Musée d'Orsay": return "1 Rue de la Légion d'Honneur, 75007 Paris, France"
+            case "Assemblée Nationale": return "126 Rue de l'Université, 75007 Paris, France"
+            case "Esplanade du Trocadéro – Sunset": return "Place du Trocadéro et du 11 Novembre, 75016 Paris, France"
+            case "Tour Eiffel": return "Champ de Mars, 5 Avenue Anatole France, 75007 Paris, France"
+            case "Pont Alexandre III": return "Pont Alexandre III, 75008 Paris, France"
+            case "Musée de l'Orangerie": return "Jardin des Tuileries, 75001 Paris, France"
+            default: return nil
+            }
+        case .rome:
+            switch name {
+            case "Colisée (ext.)": return "Piazza del Colosseo, 1, 00184 Roma RM, Italy"
+            case "Forum Romain (vue)": return "Via della Salara Vecchia, 5/6, 00186 Roma RM, Italy"
+            case "Fontaine de Trevi": return "Piazza di Trevi, 00187 Roma RM, Italy"
+            case "Panthéon (ext.)": return "Piazza della Rotonda, 00186 Roma RM, Italy"
+            case "Piazza Navona": return "Piazza Navona, 00186 Roma RM, Italy"
+            case "Mont Palatin (vue)": return "Via di San Gregorio, 30, 00184 Roma RM, Italy"
+            case "Place Saint‑Pierre (vue)": return "Piazza San Pietro, 00120 Città del Vaticano"
+            case "Belvédère du Janicule & Trastevere (vue)": return "Piazzale Giuseppe Garibaldi, 00165 Roma RM, Italy"
+            default: return nil
+            }
+        case .madrid:
+            switch name {
+            case "Plaza Mayor": return "Plaza Mayor, 28012 Madrid, Spain"
+            case "Puerta del Sol": return "Puerta del Sol, 28013 Madrid, Spain"
+            case "Musée du Prado (ext.)": return "P.º del Prado, s/n, 28014 Madrid, Spain"
+            case "Parc du Retiro – Estanque": return "Plaza de la Independencia, 7, 28001 Madrid, Spain"
+            case "Plaza de Cibeles": return "Plaza de Cibeles, 28014 Madrid, Spain"
+            case "Cathédrale de l'Almudena": return "C. de Bailén, 10, 28013 Madrid, Spain"
+            case "Palais Royal (extérieur)": return "C. de Bailén, s/n, 28071 Madrid, Spain"
+            case "Palais Royal (esplanade)": return "C. de Bailén, s/n, 28071 Madrid, Spain"
+            case "Parc du Retiro – Palais de Cristal": return "P.º de Cuba, 4, 28009 Madrid, Spain"
+            case "Gran Vía (vue panoramique)": return "Gran Vía, 28013 Madrid, Spain"
+            default: return nil
+            }
+        case .marseille:
+            switch name {
+            case "Vieux‑Port": return "Vieux‑Port, 13001 Marseille, France"
+            case "Le Panier": return "Quartier du Panier, 13002 Marseille, France"
+            case "Cathédrale de la Major": return "Place de la Major, 13002 Marseille, France"
+            case "MuCEM": return "1 Esplanade du J4, 13002 Marseille, France"
+            case "Fort Saint‑Jean": return "Prom. Louis Brauquier, 13002 Marseille, France"
+            case "Palais Longchamp": return "Boulevard du Jardin Zoologique, 13004 Marseille, France"
+            case "Corniche Kennedy": return "Corniche Président John Fitzgerald Kennedy, 13007 Marseille, France"
+            case "Basilique Notre‑Dame de la Garde – Sunset": return "Rue Fort du Sanctuaire, 13006 Marseille, France"
+            case "Château d'If (vue/embarcadère)": return "Départ Vieux‑Port, 13001 Marseille, France"
+            default: return nil
+            }
+        case .lyon:
+            switch name {
+            case "Place Bellecour": return "Place Bellecour, 69002 Lyon, France"
+            case "Vieux Lyon & traboules": return "Rue Saint‑Jean, 69005 Lyon, France"
+            case "Quais de Saône – Saint‑Georges": return "Quai Fulchiron, 69005 Lyon, France"
+            case "Basilique de Fourvière – Belvédère": return "8 Place de Fourvière, 69005 Lyon, France"
+            case "Théâtres romains": return "17 Rue Cléberg, 69005 Lyon, France"
+            case "Place des Terreaux & Hôtel de Ville": return "Place des Terreaux, 69001 Lyon, France"
+            case "Opéra de Lyon": return "1 Place de la Comédie, 69001 Lyon, France"
+            case "Amphithéâtre des Trois Gaules": return "Rue Lucien Sportisse, 69001 Lyon, France"
+            case "Fresque des Lyonnais": return "2 Rue de la Martinière, 69001 Lyon, France"
+            case "Parc de la Tête d'Or": return "Parc de la Tête d'Or, 69006 Lyon, France"
+            case "Berges du Rhône": return "Quais du Rhône, 69006 Lyon, France"
+            case "Musée des Confluences & esplanade": return "86 Quai Perrache, 69002 Lyon, France"
+            default: return nil
+            }
+        case .milan:
+            switch name {
+            case "Duomo di Milano (ext.)": return "P.za del Duomo, 20122 Milano MI, Italy"
+            case "Galerie Vittorio Emanuele II": return "P.za del Duomo, 20123 Milano MI, Italy"
+            case "Teatro alla Scala (ext.)": return "Piazza della Scala, 20121 Milano MI, Italy"
+            case "Château des Sforza (ext.)": return "Piazza Castello, 20121 Milano MI, Italy"
+            case "Pinacothèque de Brera (ext.)": return "Via Brera, 28, 20121 Milano MI, Italy"
+            case "Cimitero Monumentale (ext.)": return "Piazzale Cimitero Monumentale, 20154 Milano MI, Italy"
+            case "Santa Maria delle Grazie (ext.)": return "Piazza di Santa Maria delle Grazie, 20123 Milano MI, Italy"
+            case "Navigli (vue)": return "Alzaia Naviglio Grande, 20144 Milano MI, Italy"
+            default: return nil
+            }
+        case .bordeaux:
+            switch name {
+            case "Place de la Bourse & Miroir d'eau": return "Place de la Bourse, 33000 Bordeaux, France"
+            case "Cathédrale Saint‑André": return "Place Pey‑Berland, 33000 Bordeaux, France"
+            case "Grosse Cloche": return "Rue Saint‑James, 33000 Bordeaux, France"
+            case "Place des Quinconces": return "Place des Quinconces, 33000 Bordeaux, France"
+            case "Quartier Saint‑Pierre": return "Place Saint‑Pierre, 33000 Bordeaux, France"
+            case "Cathédrale Saint‑André & Tour Pey‑Berland": return "Place Pey‑Berland, 33000 Bordeaux, France"
+            case "Porte Cailhau": return "Place du Palais, 33000 Bordeaux, France"
+            case "Cité du Vin (vue/extérieur)": return "134 Quai de Bacalan, 33300 Bordeaux, France"
+            case "Pont de Pierre": return "Pont de Pierre, 33000 Bordeaux, France"
+            case "Basilique Saint‑Michel (flèche)": return "Place Meynard, 33800 Bordeaux, France"
+            case "Jardin Public": return "Cours de Verdun, 33000 Bordeaux, France"
+            case "Quartier des Chartrons": return "Rue Notre Dame, 33000 Bordeaux, France"
+            default: return nil
+            }
+      
+        case .casablanca:
+            switch name {
+            case "Mosquée Hassan II": return "Boulevard Sidi Mohammed Ben Abdallah, Casablanca 20000, Morocco"
+            case "Place Mohammed V": return "Place Mohammed V, Casablanca 20000, Morocco"
+            case "Médina de Casablanca": return "Rue Tahar Sebti, Casablanca 20250, Morocco"
+            case "Place des Nations Unies": return "Place des Nations Unies, Casablanca 20250, Morocco"
+            case "Parc de la Ligue Arabe": return "Boulevard Moulay Youssef, Casablanca 20250, Morocco"
+            case "Marché Central": return "Rue Chaouia, Casablanca 20250, Morocco"
+            case "Aïn Diab – Corniche": return "Ain Diab, Casablanca 20000, Morocco"
+            case "Cathédrale du Sacré‑Cœur": return "Rue d'Alger, Casablanca 20250, Morocco"
+            case "Musée du Judaïsme Marocain": return "81 Rue Chasseur Jules Gros, Casablanca 20250, Morocco"
+            case "Twin Center (vue ext.)": return "Boulevard Al Massira Al Khadra, Casablanca 20250, Morocco"
+            default: return nil
+            }
+        case .marrakech:
+            switch name {
+            case "Jemaa el-Fna": return "Jemaa el-Fna, Marrakech 40000, Morocco"
+            case "Mosquée Koutoubia (ext.)", "Mosquée Koutoubia (jardins)": return "Avenue Mohammed V, Marrakech 40000, Morocco"
+            case "Medersa Ben Youssef (ext.)": return "Rue Assouel, Marrakech 40000, Morocco"
+            case "Palais de la Bahia (ext.)": return "Avenue Imam El Ghazali, Marrakech 40000, Morocco"
+            case "Tombeaux Saadiens (ext.)": return "Rue de la Kasbah, Marrakech 40000, Morocco"
+            case "Palais El Badi (ext.)": return "Ksibat Nhass, Marrakech 40000, Morocco"
+            case "Jardin Majorelle (ext.)": return "Rue Yves St Laurent, Marrakech 40000, Morocco"
+            case "Jardins de la Ménara (vue)": return "Avenue de la Ménara, Marrakech 40000, Morocco"
+            default: return nil
+            }
+        case .tangier:
+            switch name {
+            case "Kasbah de Tanger": return "Place du Mechouar, Tanger 90030, Morocco"
+            case "Médina & Grand Socco": return "Grand Socco, Tanger 90000, Morocco"
+            case "Médina & Petit Socco": return "Petit Socco, Tanger 90000, Morocco"
+            case "Légations américaines (musée)": return "8 Rue d'Amerique, Tanger 90000, Morocco"
+            case "Grottes d'Hercule (site)": return "Grottes d'Hercule, Tanger 90000, Morocco"
+            case "Cap Spartel (vue)": return "Cap Spartel, Tanger 90000, Morocco"
+            case "Cap Spartel (phare)": return "Phare Cap Spartel, Tanger 90000, Morocco"
+            case "Parc Perdicaris (vue)": return "Parc Perdicaris, Tanger 90000, Morocco"
+            case "Quartier Marshan & nécropole punique (vue)": return "Place du Marshan, Tanger 90000, Morocco"
+            default: return nil
+            }
+        case .luxembourg:
+            switch name {
+            case "Palais grand‑ducal": return "17 Rue du Marché‑aux‑Herbes, 1728 Luxembourg"
+            case "Cathédrale Notre‑Dame de Luxembourg": return "Rue Notre Dame, 2240 Luxembourg"
+            case "Place Guillaume II (Knuedler)": return "Place Guillaume II, 1648 Luxembourg"
+            case "Casemates du Bock": return "10 Montée de Clausen, 1343 Luxembourg"
+            case "Chemin de la Corniche (belvédère)": return "Chemin de la Corniche, 1945 Luxembourg"
+            case "Grund – Quartier historique": return "Rue Münster, 2160 Luxembourg"
+            case "Place d'Armes": return "Place d'Armes, 1136 Luxembourg"
+            case "Pont Adolphe": return "Pont Adolphe, 1116 Luxembourg"
+            case "Musée national d'histoire et d'art (MNHA)": return "Marché‑aux‑Poissons, 2345 Luxembourg"
+            case "Gëlle Fra – Monument du Souvenir": return "Place de la Constitution, 2449 Luxembourg"
+            default: return nil
+            }
+        case .barcelona:
+            switch name {
+            case "Sagrada Família": return "Carrer de Mallorca, 401, 08013 Barcelona, Spain"
+            case "Casa Batlló": return "Passeig de Gràcia, 43, 08007 Barcelona, Spain"
+            case "Casa Milà – La Pedrera": return "Passeig de Gràcia, 92, 08008 Barcelona, Spain"
+            case "Barri Gòtic": return "Carrer del Bisbe, 08002 Barcelona, Spain"
+            case "Cathédrale de Barcelone": return "Pla de la Seu, s/n, 08002 Barcelona, Spain"
+            case "Parc Güell": return "Carrer d'Olot, 5, 08024 Barcelona, Spain"
+            case "MNAC – Musée National d'Art de Catalogne (vue)": return "Palau Nacional, Parc de Montjuïc, s/n, 08038 Barcelona, Spain"
+            default: return nil
+            }
+        case .london:
+            switch name {
+            case "Big Ben & Parliament": return "Westminster, London SW1A 0AA, United Kingdom"
+            case "Westminster Abbey (ext.)": return "20 Deans Yd, London SW1P 3PA, United Kingdom"
+            case "London Eye (vue)": return "Riverside Building, County Hall, London SE1 7PB, United Kingdom"
+            case "Trafalgar Square": return "Trafalgar Sq, London WC2N 5DN, United Kingdom"
+            case "National Gallery (ext.)": return "Trafalgar Sq, London WC2N 5DN, United Kingdom"
+            case "Buckingham Palace (ext.)": return "Westminster, London SW1A 1AA, United Kingdom"
+            case "St James's Park (vue)": return "London SW1A 2BJ, United Kingdom"
+            case "Piccadilly Circus": return "Piccadilly Circus, London W1D 7ET, United Kingdom"
+            case "Tower of London (ext.)": return "London EC3N 4AB, United Kingdom"
+            case "Tower Bridge (vue)": return "Tower Bridge Rd, London SE1 2UP, United Kingdom"
+            case "St Paul's Cathedral (ext.)": return "St. Paul's Churchyard, London EC4M 8AD, United Kingdom"
+            case "Millennium Bridge (vue)": return "Thames Embankment, London, United Kingdom"
+            case "Tate Modern (ext.)": return "Bankside, London SE1 9TG, United Kingdom"
+            case "Covent Garden": return "Covent Garden, London WC2E 8RF, United Kingdom"
+            case "Parliament Square (vue)": return "Parliament Square, London SW1P 3BD, United Kingdom"
+            default: return nil
+            }
+        case .prague:
+            switch name {
+            case "Château de Prague (ext.)": return "Hradčany, 119 08 Prague, Czechia"
+            case "Cathédrale Saint‑Guy (ext.)": return "III. nádvoří 48/2, 119 01 Praha 1, Czechia"
+            case "Pont Charles (vue)": return "Karlův most, 110 00 Praha 1, Czechia"
+            case "Place de la Vieille‑Ville & Horloge astronomique": return "Staroměstské nám., 110 00 Praha 1, Czechia"
+            case "Malá Strana (ruelles historiques)": return "Malá Strana, 118 00 Praha 1, Czechia"
+            case "Place Venceslas (vue)": return "Václavské nám., 110 00 Praha 1, Czechia"
+            case "Quartier juif – Josefov (ext.)": return "Maiselova 38/18, 110 00 Praha 1, Czechia"
+            case "Colline de Petřín (belvédère)": return "Petřínské sady, 118 00 Praha 1, Czechia"
+            default: return nil
+            }
+        case .amsterdam:
+            switch name {
+            case "Dam Square & Palais Royal (ext.)": return "Dam, 1012 JS Amsterdam, Netherlands"
+            case "Oude Kerk (ext.)": return "Oudekerksplein 23, 1012 GX Amsterdam, Netherlands"
+            case "Canaux du Jordaan (vue)": return "Prinsengracht 2, 1015 DV Amsterdam, Netherlands"
+            case "Maison d'Anne Frank (ext.)": return "Westermarkt 20, 1016 GV Amsterdam, Netherlands"
+            case "Rijksmuseum (ext.)": return "Museumstraat 1, 1071 XX Amsterdam, Netherlands"
+            case "Vondelpark (vue)": return "Vondelpark, Amsterdam, Netherlands"
+            case "Heineken Experience (ext.)": return "Stadhouderskade 78, 1072 AE Amsterdam, Netherlands"
+            case "Musée Van Gogh (ext.)": return "Museumplein 6, 1071 DJ Amsterdam, Netherlands"
+            case "Begijnhof (ext.)": return "Begijnhof 8-9, 1012 AB Amsterdam, Netherlands"
+            case "Magere Brug (vue)": return "Magere Brug, 1018 EG Amsterdam, Netherlands"
+            case "Ceintures de canaux (vue)": return "Keizersgracht 123, 1015 CJ Amsterdam, Netherlands"
+            default: return nil
+            }
+        case .istanbul:
+            switch name {
+            case "Sainte‑Sophie (ext.)": return "Ayasofya Meydanı, Sultan Ahmet, 34122 Fatih/İstanbul, Türkiye"
+            case "Mosquée Bleue (ext.)": return "Sultan Ahmet, Atmeydanı Cd. No:7, 34122 Fatih/İstanbul, Türkiye"
+            case "Citerne Basilique (ext.)": return "Alemdar, Yerebatan Cd. 1/3, 34110 Fatih/İstanbul, Türkiye"
+            case "Palais de Topkapı (ext.)": return "Cankurtaran, 34122 Fatih/İstanbul, Türkiye"
+            case "Hippodrome (Obélisque)": return "Sultan Ahmet, 34122 Fatih/İstanbul, Türkiye"
+            case "Tour de Galata (vue)": return "Bereketzade, Galata Kulesi, 34421 Beyoğlu/İstanbul, Türkiye"
+            case "Bazar Égyptien (ext.)": return "Rüstem Paşa, 34116 Fatih/İstanbul, Türkiye"
+            case "Mosquée Süleymaniye (ext.)": return "Süleymaniye, 34116 Fatih/İstanbul, Türkiye"
+            default: return nil
+            }
+        case .newYork:
+            switch name {
+            case "Times Square": return "Times Square, New York, NY 10036, United States"
+            case "Rockefeller Center (Top of the Rock – vue)": return "45 Rockefeller Plaza, New York, NY 10111, United States"
+            case "Central Park – Gapstow Bridge (vue)": return "Gapstow Bridge, New York, NY 10019, United States"
+            case "Grand Central Terminal (ext.)": return "89 E 42nd St, New York, NY 10017, United States"
+            case "Bryant Park (vue)": return "Bryant Park, New York, NY 10018, United States"
+            case "Fifth Avenue (promenade)": return "Fifth Ave, New York, NY, United States"
+            case "Cathédrale St. Patrick (ext.)": return "5th Ave, New York, NY 10022, United States"
+            case "MoMA (ext.)": return "11 W 53rd St, New York, NY 10019, United States"
+            case "Battery Park – Statue of Liberty (vue)": return "Battery Park, New York, NY 10004, United States"
+            case "Brooklyn Bridge (promenade)": return "Brooklyn Bridge, New York, NY 10038, United States"
+            case "One World Trade Center (vue)": return "285 Fulton St, New York, NY 10007, United States"
+            case "9/11 Memorial (ext.)": return "180 Greenwich St, New York, NY 10007, United States"
+            case "MET – The Met Fifth Avenue (ext.)": return "1000 5th Ave, New York, NY 10028, United States"
+            case "Central Park – Belvedere Castle (vue)": return "Belvedere Castle, New York, NY 10024, United States"
+            default: return nil
+            }
+        default:
+            return nil
+        }
+    }
+
+    // Luxembourg: variantes dynamiques selon densité et distances des POI
+    private func buildLuxembourgVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .luxembourg
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+
+        let centerCoordinate = getBaseCoordinates(for: city)
+        let center = CLLocation(latitude: centerCoordinate.lat, longitude: centerCoordinate.lng)
+
+        // Partition par bandes de distance (approx.)
+        // proche: <= 800m, moyen: 0.8–2.5km, large: 2.5–7km
+        let withDistances: [(loc: Location, d: CLLocationDistance)] = places.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.d <= 800 }.map { $0.loc }
+        let mediumBand = withDistances.filter { $0.d > 800 && $0.d <= 2500 }.map { $0.loc }
+        let wideBand = withDistances.filter { $0.d > 2500 && $0.d <= 7000 }.map { $0.loc }
+
+        var tours: [GuidedTour] = []
+
+        // Fonction pour créer un tour à partir d'une liste et d'un titre, en variant automatiquement le nombre d'arrêts
+        func makeTour(from bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            // Nombre d'arrêts dynamique: min(max(3, bucket.count), limite selon bande)
+            let upperLimit: Int = {
+                switch difficulty {
+                case .easy: return 6
+                case .moderate: return 8
+                case .challenging: return 10
+                }
+            }()
+            let count = min(max(3, bucket.count), upperLimit)
+            let selected = Array(bucket.prefix(count))
+
+            let stops: [TourStop] = selected.enumerated().map { (i, loc) in
+                TourStop(
+                    id: "lux_dyn_\(difficulty.rawValue)_\(i)_\(loc.id)",
+                    location: loc,
+                    order: i + 1,
+                    audioGuideText: getAudioGuideText(for: loc.name, in: city, index: i + 1),
+                    audioGuideURL: nil,
+                    visitDuration: loc.recommendedDuration ?? (difficulty == .easy ? 1500 : 1800),
+                    tips: loc.visitTips?.first ?? "Prenez le temps d'admirer la vallée et les remparts.",
+                    distanceFromPrevious: nil,
+                    travelTimeFromPrevious: nil,
+                    estimatedArrivalTime: nil,
+                    estimatedDepartureTime: nil
+                )
+            }
+
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(
+                id: "lux_dynamic_\(difficulty.rawValue)_\(count)",
+                title: "\(baseTitle) (\(count) arrêts)",
+                city: city,
+                description: "Itinéraire dynamique à Luxembourg (\(difficulty.displayName)).",
+                duration: duration,
+                difficulty: difficulty,
+                stops: stops,
+                imageURL: nil,
+                rating: Double.random(in: 4.3...4.9),
+                price: nil
+            )
+        }
+
+        if let tClose = makeTour(from: close.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                  baseTitle: "Ville Haute & alentours",
+                                  difficulty: .easy) {
+            tours.append(tClose)
+        }
+
+        if let tMedium = makeTour(from: mediumBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                   baseTitle: "Ville & Grund",
+                                   difficulty: .moderate) {
+            tours.append(tMedium)
+        }
+
+        if let tWide = makeTour(from: wideBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                 baseTitle: "Panorama élargi – Casemates & Corniche",
+                                 difficulty: .challenging) {
+            tours.append(tWide)
+        }
+
+        // Si une seule bande disponible, proposer au moins un itinéraire général trié par proximité
+        if tours.isEmpty {
+            let sorted = places.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            if let fallback = makeTour(from: sorted, baseTitle: "Essentiels de Luxembourg", difficulty: .moderate) {
+                tours.append(fallback)
+            }
+        }
+
+        return tours
+    }
+
+    // Luxembourg: tours curés fixes (3, 5 et 7 arrêts)
+    private func buildLuxembourgFixedVariants() -> [GuidedTour] {
+        let city: City = .luxembourg
+        func L(_ id: String, _ name: String, _ address: String, _ lat: Double, _ lon: Double, _ cat: LocationCategory) -> Location {
+            return Location(id: id, name: name, address: address, latitude: lat, longitude: lon, category: cat, description: nil, imageURL: nil, rating: 4.7, openingHours: nil, recommendedDuration: nil, visitTips: nil)
+        }
+        func S(_ i: Int, _ loc: Location) -> TourStop {
+            return TourStop(id: "lux_fixed_\(i)_\(loc.id)", location: loc, order: i, audioGuideText: generateAudioText(for: loc, in: city, index: i), audioGuideURL: nil, visitDuration: 1200, tips: nil, distanceFromPrevious: nil, travelTimeFromPrevious: nil, estimatedArrivalTime: nil, estimatedDepartureTime: nil)
+        }
+
+        // Facile – 3 arrêts
+        let t1Stops: [TourStop] = [
+            S(1, L("palais_gd", "Palais grand‑ducal", "17 Rue du Marché‑aux‑Herbes, 1728 Luxembourg", 49.6106, 6.1319, .historical)),
+            S(2, L("cath", "Cathédrale Notre‑Dame de Luxembourg", "Rue Notre Dame, 2240 Luxembourg", 49.6110, 6.1310, .religious)),
+            S(3, L("place_gd2", "Place Guillaume II (Knuedler)", "Place Guillaume II, 1648 Luxembourg", 49.6113, 6.1306, .culture))
+        ]
+        let t1 = GuidedTour(id: "lux_fixed_easy_3", title: "Ville Haute – Palais & Cathédrale", city: city, description: "Cœur historique de la capitale (3 arrêts).", duration: t1Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .easy, stops: t1Stops, imageURL: nil, rating: 4.8, price: nil)
+
+        // Modéré – 5 arrêts
+        let t2Stops: [TourStop] = [
+            S(1, L("casemates", "Casemates du Bock", "10 Montée de Clausen, 1343 Luxembourg", 49.6117, 6.1360, .historical)),
+            S(2, L("corniche", "Chemin de la Corniche (belvédère)", "Chemin de la Corniche, 1945 Luxembourg", 49.6119, 6.1375, .nature)),
+            S(3, L("grund", "Grund – Quartier historique", "Rue Münster, 2160 Luxembourg", 49.6110, 6.1370, .culture)),
+            S(4, L("place_armes", "Place d'Armes", "Place d'Armes, 1136 Luxembourg", 49.6116, 6.1294, .culture)),
+            S(5, L("adolphe", "Pont Adolphe", "Pont Adolphe, 1116 Luxembourg", 49.6049, 6.1276, .historical))
+        ]
+        let t2 = GuidedTour(id: "lux_fixed_moderate_5", title: "Corniche & Grund – Belvédères", city: city, description: "Vues et quartiers emblématiques (5 arrêts).", duration: t2Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .moderate, stops: t2Stops, imageURL: nil, rating: 4.7, price: nil)
+
+        // Difficile – 7 arrêts
+        let t3Stops: [TourStop] = [
+            S(1, L("palais_gd3", "Palais grand‑ducal", "17 Rue du Marché‑aux‑Herbes, 1728 Luxembourg", 49.6106, 6.1319, .historical)),
+            S(2, L("casemates3", "Casemates du Bock", "10 Montée de Clausen, 1343 Luxembourg", 49.6117, 6.1360, .historical)),
+            S(3, L("corniche3", "Chemin de la Corniche (belvédère)", "Chemin de la Corniche, 1945 Luxembourg", 49.6119, 6.1375, .nature)),
+            S(4, L("grund3", "Grund – Quartier historique", "Rue Münster, 2160 Luxembourg", 49.6110, 6.1370, .culture)),
+            S(5, L("mnha", "Musée national d'histoire et d'art (MNHA)", "Marché‑aux‑Poissons, 2345 Luxembourg", 49.6104, 6.1327, .museum)),
+            S(6, L("gelle_fra", "Gëlle Fra – Monument du Souvenir", "Place de la Constitution, 2449 Luxembourg", 49.6093, 6.1296, .historical)),
+            S(7, L("adolphe3", "Pont Adolphe", "Pont Adolphe, 1116 Luxembourg", 49.6049, 6.1276, .historical))
+        ]
+        let t3 = GuidedTour(id: "lux_fixed_challenging_7", title: "Ville Haute & Corniche – Panorama & mémoire", city: city, description: "Fortifications, belvédères et places (7 arrêts).", duration: t3Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration }, difficulty: .challenging, stops: t3Stops, imageURL: nil, rating: 4.7, price: nil)
+
+        return [t1, t2, t3]
+    }
+
+    // Munich: variantes dynamiques selon densité et distances des POI (même logique que Luxembourg, titres adaptés)
+    private func buildMunichVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .munich
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+
+        let centerCoordinate = getBaseCoordinates(for: city)
+        let center = CLLocation(latitude: centerCoordinate.lat, longitude: centerCoordinate.lng)
+
+        // Bandes de distance adaptées à un centre urbain étendu comme Munich
+        let withDistances: [(loc: Location, d: CLLocationDistance)] = places.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.d <= 900 }.map { $0.loc }
+        let mediumBand = withDistances.filter { $0.d > 900 && $0.d <= 3000 }.map { $0.loc }
+        let wideBand = withDistances.filter { $0.d > 3000 && $0.d <= 9000 }.map { $0.loc }
+
+        var tours: [GuidedTour] = []
+
+        func makeTour(from bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let upperLimit: Int = {
+                switch difficulty {
+                case .easy: return 6
+                case .moderate: return 9
+                case .challenging: return 12
+                }
+            }()
+            let count = min(max(3, bucket.count), upperLimit)
+            let selected = Array(bucket.prefix(count))
+
+            let stops: [TourStop] = selected.enumerated().map { (i, loc) in
+                TourStop(
+                    id: "muc_dyn_\(difficulty.rawValue)_\(i)_\(loc.id)",
+                    location: loc,
+                    order: i + 1,
+                    audioGuideText: getAudioGuideText(for: loc.name, in: city, index: i + 1),
+                    audioGuideURL: nil,
+                    visitDuration: loc.recommendedDuration ?? (difficulty == .easy ? 1500 : 1800),
+                    tips: loc.visitTips?.first ?? "Prévoyez un petit arrêt pour admirer l'architecture.",
+                    distanceFromPrevious: nil,
+                    travelTimeFromPrevious: nil,
+                    estimatedArrivalTime: nil,
+                    estimatedDepartureTime: nil
+                )
+            }
+
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(
+                id: "muc_dynamic_\(difficulty.rawValue)_\(count)",
+                title: "\(baseTitle) (\(count) arrêts)",
+                city: city,
+                description: "Itinéraire dynamique à Munich (\(difficulty.displayName)).",
+                duration: duration,
+                difficulty: difficulty,
+                stops: stops,
+                imageURL: nil,
+                rating: Double.random(in: 4.3...4.9),
+                price: nil
+            )
+        }
+
+        if let tClose = makeTour(from: close.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                  baseTitle: "Centre historique – Marienplatz & alentours",
+                                  difficulty: .easy) {
+            tours.append(tClose)
+        }
+
+        if let tMedium = makeTour(from: mediumBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                   baseTitle: "Classiques de Munich – Résidence & musées",
+                                   difficulty: .moderate) {
+            tours.append(tMedium)
+        }
+
+        if let tWide = makeTour(from: wideBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                 baseTitle: "Grand panorama – Englischer Garten & alentours",
+                                 difficulty: .challenging) {
+            tours.append(tWide)
+        }
+
+        if tours.isEmpty {
+            let sorted = places.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            if let fallback = makeTour(from: sorted, baseTitle: "Essentiels de Munich", difficulty: .moderate) {
+                tours.append(fallback)
+            }
+        }
+        // Tour thématique supplémentaire: Musées & Résidence / Pinakotheken
+        func makeExtra(_ bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let count = min(max(3, bucket.count), 10)
+            let stops = Array(bucket.prefix(count)).enumerated().map { (i, loc) in
+                TourStop(id: "muc_extra_\(difficulty.rawValue)_\(i)_\(loc.id)", location: loc, order: i+1,
+                         audioGuideText: getAudioGuideText(for: loc.name, in: city, index: i+1), audioGuideURL: nil,
+                         visitDuration: loc.recommendedDuration ?? 1500,
+                         tips: loc.visitTips?.first ?? "Pinakotheken: vérifiez jours/horaires réduits.",
+                         distanceFromPrevious: nil, travelTimeFromPrevious: nil, estimatedArrivalTime: nil, estimatedDepartureTime: nil)
+            }
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(id: "munich_additional_\(difficulty.rawValue)_\(count)", title: baseTitle, city: city,
+                              description: "Itinéraire thématique à Munich.", duration: duration, difficulty: difficulty,
+                              stops: stops, imageURL: nil, rating: Double.random(in: 4.4...4.9), price: nil)
+        }
+        let museums = places.filter { $0.name.lowercased().contains("pinakothek") || $0.name.lowercased().contains("residenz") || $0.category == .museum }
+        if let extra = makeExtra(museums, baseTitle: "Musées & Résidence – Pinakotheken", difficulty: .moderate) { tours.append(extra) }
+        return tours
+    }
+
+    // Hambourg: variantes dynamiques selon densité et distances des POI
+    private func buildHamburgVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .hamburg
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+
+        let centerCoordinate = getBaseCoordinates(for: city)
+        let center = CLLocation(latitude: centerCoordinate.lat, longitude: centerCoordinate.lng)
+
+        // Bandes: centre historique/Alster, Speicherstadt-HafenCity, Elbe/Reeperbahn/Planten un Blomen
+        let withDistances: [(loc: Location, d: CLLocationDistance)] = places.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.d <= 1000 }.map { $0.loc }
+        let mediumBand = withDistances.filter { $0.d > 1000 && $0.d <= 3000 }.map { $0.loc }
+        let wideBand = withDistances.filter { $0.d > 3000 && $0.d <= 8000 }.map { $0.loc }
+
+        var tours: [GuidedTour] = []
+
+        func makeTour(from bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let upperLimit: Int = {
+                switch difficulty {
+                case .easy: return 6
+                case .moderate: return 9
+                case .challenging: return 12
+                }
+            }()
+            let count = min(max(3, bucket.count), upperLimit)
+            let selected = Array(bucket.prefix(count))
+
+            let stops: [TourStop] = selected.enumerated().map { (i, loc) in
+                TourStop(
+                    id: "ham_dyn_\(difficulty.rawValue)_\(i)_\(loc.id)",
+                    location: loc,
+                    order: i + 1,
+                    audioGuideText: getAudioGuideText(for: loc.name, in: city, index: i + 1),
+                    audioGuideURL: nil,
+                    visitDuration: loc.recommendedDuration ?? (difficulty == .easy ? 1500 : 1800),
+                    tips: loc.visitTips?.first ?? "Cherchez les canaux et points de vue sur l'eau.",
+                    distanceFromPrevious: nil,
+                    travelTimeFromPrevious: nil,
+                    estimatedArrivalTime: nil,
+                    estimatedDepartureTime: nil
+                )
+            }
+
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(
+                id: "ham_dynamic_\(difficulty.rawValue)_\(count)",
+                title: "\(baseTitle) (\(count) arrêts)",
+                city: city,
+                description: "Itinéraire dynamique à Hambourg (\(difficulty.displayName)).",
+                duration: duration,
+                difficulty: difficulty,
+                stops: stops,
+                imageURL: nil,
+                rating: Double.random(in: 4.3...4.9),
+                price: nil
+            )
+        }
+
+        if let tClose = makeTour(from: close.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                  baseTitle: "Centre & Alster – Rathaus, Jungfernstieg",
+                                  difficulty: .easy) {
+            tours.append(tClose)
+        }
+
+        if let tMedium = makeTour(from: mediumBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                   baseTitle: "HafenCity & Speicherstadt – Elbphilharmonie",
+                                   difficulty: .moderate) {
+            tours.append(tMedium)
+        }
+
+        if let tWide = makeTour(from: wideBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                 baseTitle: "Grand panorama – St. Michaelis & Reeperbahn",
+                                 difficulty: .challenging) {
+            tours.append(tWide)
+        }
+
+        if tours.isEmpty {
+            let sorted = places.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            if let fallback = makeTour(from: sorted, baseTitle: "Essentiels de Hambourg", difficulty: .moderate) {
+                tours.append(fallback)
+            }
+        }
+        // Tour thématique supplémentaire: Speicherstadt & Elbphilharmonie
+        func makeExtra(_ bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let count = min(max(3, bucket.count), 10)
+            let stops = Array(bucket.prefix(count)).enumerated().map { (i, loc) in
+                TourStop(id: "ham_extra_\(difficulty.rawValue)_\(i)_\(loc.id)", location: loc, order: i+1,
+                         audioGuideText: getAudioGuideText(for: loc.name, in: city, index: i+1), audioGuideURL: nil,
+                         visitDuration: loc.recommendedDuration ?? 1500,
+                         tips: loc.visitTips?.first ?? "Speicherstadt: superbe au crépuscule pour les photos.",
+                         distanceFromPrevious: nil, travelTimeFromPrevious: nil, estimatedArrivalTime: nil, estimatedDepartureTime: nil)
+            }
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(id: "hamburg_additional_\(difficulty.rawValue)_\(count)", title: baseTitle, city: city,
+                              description: "Itinéraire thématique à Hambourg.", duration: duration, difficulty: difficulty,
+                              stops: stops, imageURL: nil, rating: Double.random(in: 4.4...4.9), price: nil)
+        }
+        let speicherstadt = places.filter { name in
+            let n = name.name.lowercased()
+            return n.contains("speicherstadt") || n.contains("elbphilharmonie") || n.contains("hafen") || n.contains("hafen city") || n.contains("hafenCity".lowercased())
+        }
+        if let extra = makeExtra(speicherstadt, baseTitle: "Speicherstadt & Elbphilharmonie – patrimoine portuaire", difficulty: .moderate) { tours.append(extra) }
+        return tours
+    }
+
+    // Francfort: variantes dynamiques
+    private func buildFrankfurtVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .frankfurt
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let centerCoordinate = getBaseCoordinates(for: city)
+        let center = CLLocation(latitude: centerCoordinate.lat, longitude: centerCoordinate.lng)
+        let withDistances: [(loc: Location, d: CLLocationDistance)] = places.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.d <= 900 }.map { $0.loc }
+        let mediumBand = withDistances.filter { $0.d > 900 && $0.d <= 3000 }.map { $0.loc }
+        let wideBand = withDistances.filter { $0.d > 3000 && $0.d <= 8000 }.map { $0.loc }
+
+        var tours: [GuidedTour] = []
+        func makeTour(from bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let upperLimit: Int = difficulty == .easy ? 6 : (difficulty == .moderate ? 9 : 12)
+            let count = min(max(3, bucket.count), upperLimit)
+            let selected = Array(bucket.prefix(count))
+            let stops = selected.enumerated().map { (i, loc) in
+                TourStop(
+                    id: "fra_dyn_\(difficulty.rawValue)_\(i)_\(loc.id)",
+                    location: loc,
+                    order: i + 1,
+                    audioGuideText: getAudioGuideText(for: loc.name, in: city, index: i + 1),
+                    audioGuideURL: nil,
+                    visitDuration: loc.recommendedDuration ?? (difficulty == .easy ? 1500 : 1800),
+                    tips: loc.visitTips?.first ?? "Repérez les points de vue sur la skyline.",
+                    distanceFromPrevious: nil,
+                    travelTimeFromPrevious: nil,
+                    estimatedArrivalTime: nil,
+                    estimatedDepartureTime: nil
+                )
+            }
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(
+                id: "fra_dynamic_\(difficulty.rawValue)_\(count)",
+                title: "\(baseTitle) (\(count) arrêts)",
+                city: city,
+                description: "Itinéraire dynamique à Francfort (\(difficulty.displayName)).",
+                duration: duration,
+                difficulty: difficulty,
+                stops: stops,
+                imageURL: nil,
+                rating: Double.random(in: 4.3...4.9),
+                price: nil
+            )
+        }
+
+        if let tClose = makeTour(from: close.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                  baseTitle: "Centre & Römerberg – Altstadt",
+                                  difficulty: .easy) { tours.append(tClose) }
+        if let tMedium = makeTour(from: mediumBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                   baseTitle: "Musées & Mainufer – Museumsufer",
+                                   difficulty: .moderate) { tours.append(tMedium) }
+        if let tWide = makeTour(from: wideBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                 baseTitle: "Grand panorama – Skyline & Palmengarten",
+                                 difficulty: .challenging) { tours.append(tWide) }
+
+        if tours.isEmpty {
+            let sorted = places.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            if let fallback = makeTour(from: sorted, baseTitle: "Essentiels de Francfort", difficulty: .moderate) { tours.append(fallback) }
+        }
+        return tours
+    }
+
+    // Cologne: variantes dynamiques
+    private func buildCologneVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .cologne
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let centerCoordinate = getBaseCoordinates(for: city)
+        let center = CLLocation(latitude: centerCoordinate.lat, longitude: centerCoordinate.lng)
+        let withDistances: [(loc: Location, d: CLLocationDistance)] = places.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.d <= 800 }.map { $0.loc }
+        let mediumBand = withDistances.filter { $0.d > 800 && $0.d <= 2500 }.map { $0.loc }
+        let wideBand = withDistances.filter { $0.d > 2500 && $0.d <= 7000 }.map { $0.loc }
+
+        var tours: [GuidedTour] = []
+        func makeTour(from bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let upperLimit: Int = difficulty == .easy ? 6 : (difficulty == .moderate ? 8 : 10)
+            let count = min(max(3, bucket.count), upperLimit)
+            let selected = Array(bucket.prefix(count))
+            let stops = selected.enumerated().map { (i, loc) in
+                TourStop(
+                    id: "cgn_dyn_\(difficulty.rawValue)_\(i)_\(loc.id)",
+                    location: loc,
+                    order: i + 1,
+                    audioGuideText: getAudioGuideText(for: loc.name, in: city, index: i + 1),
+                    audioGuideURL: nil,
+                    visitDuration: loc.recommendedDuration ?? (difficulty == .easy ? 1500 : 1800),
+                    tips: loc.visitTips?.first ?? "Profitez de la vue sur le Rhin lors des traversées.",
+                    distanceFromPrevious: nil,
+                    travelTimeFromPrevious: nil,
+                    estimatedArrivalTime: nil,
+                    estimatedDepartureTime: nil
+                )
+            }
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(
+                id: "cgn_dynamic_\(difficulty.rawValue)_\(count)",
+                title: "\(baseTitle) (\(count) arrêts)",
+                city: city,
+                description: "Itinéraire dynamique à Cologne (\(difficulty.displayName)).",
+                duration: duration,
+                difficulty: difficulty,
+                stops: stops,
+                imageURL: nil,
+                rating: Double.random(in: 4.3...4.9),
+                price: nil
+            )
+        }
+
+        if let tClose = makeTour(from: close.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                  baseTitle: "Autour de la cathédrale – Altstadt Nord",
+                                  difficulty: .easy) { tours.append(tClose) }
+        if let tMedium = makeTour(from: mediumBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                   baseTitle: "Rives du Rhin & musées – Museum Ludwig",
+                                   difficulty: .moderate) { tours.append(tMedium) }
+        if let tWide = makeTour(from: wideBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                 baseTitle: "Grand panorama – Hohenzollernbrücke & Rheinpark",
+                                 difficulty: .challenging) { tours.append(tWide) }
+
+        if tours.isEmpty {
+            let sorted = places.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            if let fallback = makeTour(from: sorted, baseTitle: "Essentiels de Cologne", difficulty: .moderate) { tours.append(fallback) }
+        }
+        return tours
+    }
+
+    // Bruxelles: jeux de tours curés (fixes) 100% compatibles avec les règles (3–7 arrêts), adresses Apple Maps
+    private func buildBrusselsVariants(from _: [Location]) -> [GuidedTour] {
+        let city: City = .brussels
+        func L(_ id: String, _ name: String, _ address: String, _ lat: Double, _ lon: Double, _ cat: LocationCategory) -> Location {
+            return Location(id: id, name: name, address: address, latitude: lat, longitude: lon, category: cat, description: nil, imageURL: nil, rating: 4.6, openingHours: nil, recommendedDuration: nil, visitTips: nil)
+        }
+        func S(_ i: Int, _ loc: Location) -> TourStop {
+            return TourStop(id: "bru_fixed_\(i)_\(loc.id)", location: loc, order: i, audioGuideText: generateAudioText(for: loc, in: city, index: i), audioGuideURL: nil, visitDuration: 1200, tips: nil, distanceFromPrevious: nil, travelTimeFromPrevious: nil, estimatedArrivalTime: nil, estimatedDepartureTime: nil)
+        }
+
+        // Tour 1 – Facile (3 arrêts): Cœur historique
+        let t1Stops: [TourStop] = [
+            S(1, L("grand_place", "Grand-Place", "Grand-Place, 1000 Bruxelles, Belgium", 50.8467, 4.3525, .historical)),
+            S(2, L("manneken_pis", "Manneken-Pis", "Rue de l'Étuve 31, 1000 Bruxelles, Belgium", 50.8450, 4.3499, .culture)),
+            S(3, L("galeries", "Galeries Royales Saint-Hubert", "Galerie du Roi 5, 1000 Bruxelles, Belgium", 50.8485, 4.3537, .culture))
+        ]
+        let t1 = GuidedTour(
+            id: "bru_fixed_easy_3",
+            title: "Cœur historique – Grand‑Place & Galeries",
+            city: city,
+            description: "Parcours express au centre historique (3 arrêts).",
+            duration: t1Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration },
+            difficulty: .easy,
+            stops: t1Stops,
+            imageURL: nil,
+            rating: 4.8,
+            price: nil
+        )
+
+        // Tour 2 – Intermédiaire (5 arrêts): Cathédrale, Mont des Arts, Sablon, Parc
+        let t2Stops: [TourStop] = [
+            S(1, L("cathedrale", "Cathédrale Saints-Michel-et-Gudule", "Parvis Sainte-Gudule, 1000 Bruxelles, Belgium", 50.8482, 4.3570, .religious)),
+            S(2, L("mont_arts", "Mont des Arts", "Mont des Arts, 1000 Bruxelles, Belgium", 50.8459, 4.3556, .culture)),
+            S(3, L("sablon", "Place du Grand Sablon", "Place du Grand Sablon, 1000 Bruxelles, Belgium", 50.8384, 4.3533, .culture)),
+            S(4, L("palais_royal", "Palais Royal de Bruxelles", "Rue Brederode 16, 1000 Bruxelles, Belgium", 50.8415, 4.3621, .historical)),
+            S(5, L("parc_royal", "Parc de Bruxelles", "Parc de Bruxelles, 1000 Bruxelles, Belgium", 50.8455, 4.3662, .nature))
+        ]
+        let t2 = GuidedTour(
+            id: "bru_fixed_moderate_5",
+            title: "Bruxelles classique – Cathédrale, Mont des Arts & Sablon",
+            city: city,
+            description: "Découverte étendue de la haute ville (5 arrêts).",
+            duration: t2Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration },
+            difficulty: .moderate,
+            stops: t2Stops,
+            imageURL: nil,
+            rating: 4.7,
+            price: nil
+        )
+
+        // Tour 3 – Difficile (5 arrêts): Grands symboles – Atomium & Cinquantenaire
+        let t3Stops: [TourStop] = [
+            S(1, L("atomium", "Atomium", "Square de l'Atomium, 1020 Bruxelles, Belgium", 50.8950, 4.3418, .culture)),
+            S(2, L("cinquantenaire", "Parc du Cinquantenaire", "Avenue de la Joyeuse Entrée 1, 1040 Bruxelles, Belgium", 50.8419, 4.3839, .nature)),
+            S(3, L("autoworld", "Arcades du Cinquantenaire", "Parc du Cinquantenaire, 1000 Bruxelles, Belgium", 50.8420, 4.3920, .historical)),
+            S(4, L("magritte", "Musée Magritte", "Rue de la Régence 3, 1000 Bruxelles, Belgium", 50.8369, 4.3601, .museum)),
+            S(5, L("parc_royal2", "Parc de Bruxelles", "Parc de Bruxelles, 1000 Bruxelles, Belgium", 50.8455, 4.3662, .nature))
+        ]
+        let t3 = GuidedTour(
+            id: "bru_fixed_challenging_5",
+            title: "Grands symboles – Atomium & Cinquantenaire",
+                city: city,
+            description: "Panoramas et emblèmes nationaux (5 arrêts).",
+            duration: t3Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration },
+            difficulty: .challenging,
+            stops: t3Stops,
+                imageURL: nil,
+            rating: 4.6,
+                price: nil
+            )
+
+        // Tour 4 – Difficile (7 arrêts): Ultra‑classiques & coucher de soleil (Place Poelaert & Avenue Louise)
+        let t4Stops: [TourStop] = [
+            S(1, L("gp", "Grand-Place", "Grand-Place, 1000 Bruxelles, Belgium", 50.8467, 4.3525, .historical)),
+            S(2, L("galr", "Galeries Royales Saint-Hubert", "Galerie du Roi 5, 1000 Bruxelles, Belgium", 50.8485, 4.3537, .culture)),
+            S(3, L("mkp", "Manneken-Pis", "Rue de l'Étuve 31, 1000 Bruxelles, Belgium", 50.8450, 4.3499, .culture)),
+            S(4, L("cath", "Cathédrale Saints-Michel-et-Gudule", "Parvis Sainte-Gudule, 1000 Bruxelles, Belgium", 50.8482, 4.3570, .religious)),
+            S(5, L("marts", "Mont des Arts", "Mont des Arts, 1000 Bruxelles, Belgium", 50.8459, 4.3556, .culture)),
+            S(6, L("poel", "Place Poelaert – Panorama/Roue", "Place Poelaert, 1000 Bruxelles, Belgium", 50.8359, 4.3517, .culture)),
+            S(7, L("avlou", "Avenue Louise", "Avenue Louise, 1050 Bruxelles, Belgium", 50.8330, 4.3560, .culture))
+        ]
+        let t4 = GuidedTour(
+            id: "bru_fixed_challenging_7",
+            title: "Ultra‑classiques & coucher de soleil – Poelaert & Avenue Louise",
+            city: city,
+            description: "Les immanquables du centre jusqu'au panorama de Poelaert et l'avenue Louise (7 arrêts).",
+            duration: t4Stops.reduce(TimeInterval(0)) { $0 + $1.visitDuration },
+            difficulty: .challenging,
+            stops: t4Stops,
+            imageURL: nil,
+            rating: 4.7,
+            price: nil
+        )
+
+        return [t1, t2, t3, t4]
+    }
+
+    // Bruges: variantes dynamiques + déduplication + audio garanti 30–150s
+    private func buildBrugesVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .bruges
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let centerCoordinate = getBaseCoordinates(for: city)
+        let center = CLLocation(latitude: centerCoordinate.lat, longitude: centerCoordinate.lng)
+
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances: [(loc: Location, d: CLLocationDistance)] = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.d <= 700 }.map { $0.loc } // Markt, Beffroi, Burg
+        let mediumBand = withDistances.filter { $0.d > 700 && $0.d <= 2500 }.map { $0.loc } // Dijver, Groeninge, Rozenhoedkaai
+        let wideBand = withDistances.filter { $0.d > 2500 && $0.d <= 6000 }.map { $0.loc } // Minnewater, Béguinage, moulins au nord
+
+        var tours: [GuidedTour] = []
+        func makeTour(from bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let upper = difficulty == .easy ? 6 : (difficulty == .moderate ? 8 : 10)
+            let count = min(max(3, bucket.count), upper)
+            let selected = Array(bucket.prefix(count))
+            let stops = selected.enumerated().map { (i, loc) in
+                TourStop(
+                    id: "bruG_dyn_\(difficulty.rawValue)_\(i)_\(loc.id)",
+                    location: loc,
+                    order: i + 1,
+                    audioGuideText: generateAudioText(for: loc, in: city, index: i + 1),
+                    audioGuideURL: nil,
+                    visitDuration: loc.recommendedDuration ?? (difficulty == .easy ? 1500 : 1800),
+                    tips: loc.visitTips?.first ?? "Cherchez les reflets sur les canaux pour les meilleures photos.",
+                    distanceFromPrevious: nil,
+                    travelTimeFromPrevious: nil,
+                    estimatedArrivalTime: nil,
+                    estimatedDepartureTime: nil
+                )
+            }
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(
+                id: "bruges_dynamic_\(difficulty.rawValue)_\(count)",
+                title: "\(baseTitle) (\(count) arrêts)",
+                city: city,
+                description: "Itinéraire dynamique à Bruges (\(difficulty.displayName)).",
+                duration: duration,
+                difficulty: difficulty,
+                stops: stops,
+                imageURL: nil,
+                rating: Double.random(in: 4.3...4.9),
+                price: nil
+            )
+        }
+
+        if let tClose = makeTour(from: close.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                  baseTitle: "Autour du Markt & du Beffroi",
+                                  difficulty: .easy) { tours.append(tClose) }
+        if let tMedium = makeTour(from: mediumBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                   baseTitle: "Canaux & musées – Dijver & Groeninge",
+                                   difficulty: .moderate) { tours.append(tMedium) }
+        if let tWide = makeTour(from: wideBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                 baseTitle: "Panorama – Minnewater & Béguinage",
+                                 difficulty: .challenging) { tours.append(tWide) }
+
+        if tours.isEmpty {
+            let sorted = cleaned.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            if let fb = makeTour(from: sorted, baseTitle: "Essentiels de Bruges", difficulty: .moderate) { tours.append(fb) }
+        }
+        return tours
+    }
+
+    // Anvers: variantes dynamiques + déduplication + audio garanti
+    private func buildAntwerpVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .antwerp
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let centerCoordinate = getBaseCoordinates(for: city)
+        let center = CLLocation(latitude: centerCoordinate.lat, longitude: centerCoordinate.lng)
+
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances: [(loc: Location, d: CLLocationDistance)] = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.d <= 800 }.map { $0.loc } // Grote Markt, Cathédrale
+        let mediumBand = withDistances.filter { $0.d > 800 && $0.d <= 3000 }.map { $0.loc } // Meir, Rubenshuis, MAS
+        let wideBand = withDistances.filter { $0.d > 3000 && $0.d <= 8000 }.map { $0.loc } // Port, ZOO, quartiers périphériques
+
+        var tours: [GuidedTour] = []
+        func makeTour(from bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let upper = difficulty == .easy ? 6 : (difficulty == .moderate ? 8 : 10)
+            let count = min(max(3, bucket.count), upper)
+            let selected = Array(bucket.prefix(count))
+            let stops = selected.enumerated().map { (i, loc) in
+                TourStop(
+                    id: "ant_dyn_\(difficulty.rawValue)_\(i)_\(loc.id)",
+                    location: loc,
+                    order: i + 1,
+                    audioGuideText: generateAudioText(for: loc, in: city, index: i + 1),
+                    audioGuideURL: nil,
+                    visitDuration: loc.recommendedDuration ?? (difficulty == .easy ? 1500 : 1800),
+                    tips: loc.visitTips?.first ?? "Levez les yeux: pignons et façades baroques abondent.",
+                    distanceFromPrevious: nil,
+                    travelTimeFromPrevious: nil,
+                    estimatedArrivalTime: nil,
+                    estimatedDepartureTime: nil
+                )
+            }
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(
+                id: "antwerp_dynamic_\(difficulty.rawValue)_\(count)",
+                title: "\(baseTitle) (\(count) arrêts)",
+                city: city,
+                description: "Itinéraire dynamique à Anvers (\(difficulty.displayName)).",
+                duration: duration,
+                difficulty: difficulty,
+                stops: stops,
+                imageURL: nil,
+                rating: Double.random(in: 4.3...4.9),
+                price: nil
+            )
+        }
+
+        if let tClose = makeTour(from: close.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                  baseTitle: "Grote Markt & Cathédrale",
+                                  difficulty: .easy) { tours.append(tClose) }
+        if let tMedium = makeTour(from: mediumBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                   baseTitle: "Meir, Rubenshuis & musées",
+                                   difficulty: .moderate) { tours.append(tMedium) }
+        if let tWide = makeTour(from: wideBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                 baseTitle: "Panorama – MAS & bords de l'Escaut",
+                                 difficulty: .challenging) { tours.append(tWide) }
+
+        if tours.isEmpty {
+            let sorted = cleaned.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            if let fb = makeTour(from: sorted, baseTitle: "Essentiels d'Anvers", difficulty: .moderate) { tours.append(fb) }
+        }
+        return tours
+    }
+
+    // Pékin (Beijing): variantes dynamiques, lieux majeurs culturels, audios garantis
+    private func buildBeijingVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .beijing
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let centerCoordinate = getBaseCoordinates(for: city)
+        let center = CLLocation(latitude: centerCoordinate.lat, longitude: centerCoordinate.lng)
+
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances: [(loc: Location, d: CLLocationDistance)] = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.d <= 1500 }.map { $0.loc } // Cité Interdite, Tian'anmen, Jingshan/Beihai
+        let mediumBand = withDistances.filter { $0.d > 1500 && $0.d <= 15000 }.map { $0.loc } // Temple du Ciel, Yonghe, Hutongs
+        let wideBand = withDistances.filter { $0.d > 15000 && $0.d <= 70000 }.map { $0.loc } // Palais d'Été, Grande Muraille (Mutianyu)
+
+        var tours: [GuidedTour] = []
+        func makeTour(from bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let upper = difficulty == .easy ? 6 : (difficulty == .moderate ? 8 : 10)
+            let count = min(max(3, bucket.count), upper)
+            let selected = Array(bucket.prefix(count))
+            let stops = selected.enumerated().map { (i, loc) in
+                TourStop(
+                    id: "pek_dyn_\(difficulty.rawValue)_\(i)_\(loc.id)",
+                    location: loc,
+                    order: i + 1,
+                    audioGuideText: generateAudioText(for: loc, in: city, index: i + 1),
+                    audioGuideURL: nil,
+                    visitDuration: loc.recommendedDuration ?? (difficulty == .easy ? 1500 : 1800),
+                    tips: loc.visitTips?.first ?? "Prévoyez de l'eau et vérifiez les horaires, les sites sont vastes.",
+                    distanceFromPrevious: nil,
+                    travelTimeFromPrevious: nil,
+                    estimatedArrivalTime: nil,
+                    estimatedDepartureTime: nil
+                )
+            }
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(
+                id: "beijing_dynamic_\(difficulty.rawValue)_\(count)",
+                title: "\(baseTitle) (\(count) arrêts)",
+                city: city,
+                description: "Itinéraire dynamique à Pékin (\(difficulty.displayName)).",
+                duration: duration,
+                difficulty: difficulty,
+                stops: stops,
+                imageURL: nil,
+                rating: Double.random(in: 4.3...4.9),
+                price: nil
+            )
+        }
+
+        if let tClose = makeTour(from: close.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                  baseTitle: "Cité interdite & cœur impérial",
+                                  difficulty: .easy) { tours.append(tClose) }
+        if let tMedium = makeTour(from: mediumBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                   baseTitle: "Temples & hutongs – Tiantan, Yonghe, Nanluoguxiang",
+                                   difficulty: .moderate) { tours.append(tMedium) }
+        if let tWide = makeTour(from: wideBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                 baseTitle: "Grands paysages – Palais d'Été & Grande Muraille",
+                                 difficulty: .challenging) { tours.append(tWide) }
+
+        if tours.isEmpty {
+            let sorted = cleaned.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            if let fb = makeTour(from: sorted, baseTitle: "Essentiels de Pékin", difficulty: .moderate) { tours.append(fb) }
+        }
+        return tours
+    }
+
+    // Shanghai: variantes dynamiques, Bund/ musées / gratte‑ciel
+    private func buildShanghaiVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .shanghai
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let centerCoordinate = getBaseCoordinates(for: city)
+        let center = CLLocation(latitude: centerCoordinate.lat, longitude: centerCoordinate.lng)
+
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances: [(loc: Location, d: CLLocationDistance)] = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.d <= 1500 }.map { $0.loc } // Bund, Place du Peuple, Musée de Shanghai
+        let mediumBand = withDistances.filter { $0.d > 1500 && $0.d <= 8000 }.map { $0.loc } // Yu Garden, Nanjing Rd, Xintiandi, Tianzifang
+        let wideBand = withDistances.filter { $0.d > 8000 && $0.d <= 20000 }.map { $0.loc } // Lujiazui (tour de Shanghai, SWFC), Aquarium
+
+        var tours: [GuidedTour] = []
+        func makeTour(from bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let upper = difficulty == .easy ? 6 : (difficulty == .moderate ? 8 : 10)
+            let count = min(max(3, bucket.count), upper)
+            let selected = Array(bucket.prefix(count))
+            let stops = selected.enumerated().map { (i, loc) in
+                TourStop(
+                    id: "sha_dyn_\(difficulty.rawValue)_\(i)_\(loc.id)",
+                    location: loc,
+                    order: i + 1,
+                    audioGuideText: generateAudioText(for: loc, in: city, index: i + 1),
+                    audioGuideURL: nil,
+                    visitDuration: loc.recommendedDuration ?? (difficulty == .easy ? 1500 : 1800),
+                    tips: loc.visitTips?.first ?? "Le soir, privilégiez Bund et Lujiazui pour les lumières.",
+                    distanceFromPrevious: nil,
+                    travelTimeFromPrevious: nil,
+                    estimatedArrivalTime: nil,
+                    estimatedDepartureTime: nil
+                )
+            }
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(
+                id: "shanghai_dynamic_\(difficulty.rawValue)_\(count)",
+                title: "\(baseTitle) (\(count) arrêts)",
+                city: city,
+                description: "Itinéraire dynamique à Shanghai (\(difficulty.displayName)).",
+                duration: duration,
+                difficulty: difficulty,
+                stops: stops,
+                imageURL: nil,
+                rating: Double.random(in: 4.3...4.9),
+                price: nil
+            )
+        }
+
+        if let tClose = makeTour(from: close.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                  baseTitle: "Bund & musées – Place du Peuple",
+                                  difficulty: .easy) { tours.append(tClose) }
+        if let tMedium = makeTour(from: mediumBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                   baseTitle: "Vieux Shanghai & ruelles – Yu Garden, Tianzifang, Xintiandi",
+                                   difficulty: .moderate) { tours.append(tMedium) }
+        if let tWide = makeTour(from: wideBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                 baseTitle: "Panorama Lujiazui – Tours & gratte‑ciel",
+                                 difficulty: .challenging) { tours.append(tWide) }
+
+        if tours.isEmpty {
+            let sorted = cleaned.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            if let fb = makeTour(from: sorted, baseTitle: "Essentiels de Shanghai", difficulty: .moderate) { tours.append(fb) }
+        }
+        return tours
+    }
+
+    // Xi'an: variantes dynamiques, patrimoine historique
+    private func buildXianVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .xian
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let centerCoordinate = getBaseCoordinates(for: city)
+        let center = CLLocation(latitude: centerCoordinate.lat, longitude: centerCoordinate.lng)
+
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances: [(loc: Location, d: CLLocationDistance)] = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.d <= 2000 }.map { $0.loc } // Clocher, Tour du Tambour, Quartier musulman, Grande Mosquée, Muraille
+        let mediumBand = withDistances.filter { $0.d > 2000 && $0.d <= 12000 }.map { $0.loc } // Pagode de l'Oie sauvage, Musée du Shaanxi
+        let wideBand = withDistances.filter { $0.d > 12000 && $0.d <= 40000 }.map { $0.loc } // Armée de terre cuite, Huaqing Palace
+
+        var tours: [GuidedTour] = []
+        func makeTour(from bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let upper = difficulty == .easy ? 6 : (difficulty == .moderate ? 8 : 10)
+            let count = min(max(3, bucket.count), upper)
+            let selected = Array(bucket.prefix(count))
+            let stops = selected.enumerated().map { (i, loc) in
+                TourStop(
+                    id: "xian_dyn_\(difficulty.rawValue)_\(i)_\(loc.id)",
+                    location: loc,
+                    order: i + 1,
+                    audioGuideText: generateAudioText(for: loc, in: city, index: i + 1),
+                    audioGuideURL: nil,
+                    visitDuration: loc.recommendedDuration ?? (difficulty == .easy ? 1500 : 1800),
+                    tips: loc.visitTips?.first ?? "Louez un vélo sur la muraille; prévoyez du temps pour l'armée de terre cuite.",
+                    distanceFromPrevious: nil,
+                    travelTimeFromPrevious: nil,
+                    estimatedArrivalTime: nil,
+                    estimatedDepartureTime: nil
+                )
+            }
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(
+                id: "xian_dynamic_\(difficulty.rawValue)_\(count)",
+                title: "\(baseTitle) (\(count) arrêts)",
+                city: city,
+                description: "Itinéraire dynamique à Xi'an (\(difficulty.displayName)).",
+                duration: duration,
+                difficulty: difficulty,
+                stops: stops,
+                imageURL: nil,
+                rating: Double.random(in: 4.3...4.9),
+                price: nil
+            )
+        }
+
+        if let tClose = makeTour(from: close.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                  baseTitle: "Centre historique – Clocher, Tambour, Muraille",
+                                  difficulty: .easy) { tours.append(tClose) }
+        if let tMedium = makeTour(from: mediumBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                   baseTitle: "Culture & religion – Pagode de l'Oie sauvage, Musée du Shaanxi",
+                                   difficulty: .moderate) { tours.append(tMedium) }
+        if let tWide = makeTour(from: wideBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                 baseTitle: "Sites impériaux – Armée de terre cuite & Huaqing Palace",
+                                 difficulty: .challenging) { tours.append(tWide) }
+
+        if tours.isEmpty {
+            let sorted = cleaned.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            if let fb = makeTour(from: sorted, baseTitle: "Essentiels de Xi'an", difficulty: .moderate) { tours.append(fb) }
+        }
+        return tours
+    }
+
+    // Chengdu: variantes dynamiques – pandas, sites culturels, temples
+    private func buildChengduVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .chengdu
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let centerCoordinate = getBaseCoordinates(for: city)
+        let center = CLLocation(latitude: centerCoordinate.lat, longitude: centerCoordinate.lng)
+
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances: [(loc: Location, d: CLLocationDistance)] = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.d <= 3000 }.map { $0.loc } // Wuhou, Kuanzhai, Musée de Chengdu, Cottage de Du Fu
+        let mediumBand = withDistances.filter { $0.d > 3000 && $0.d <= 15000 }.map { $0.loc } // Base des pandas, Jinsha Site Museum
+        let wideBand = withDistances.filter { $0.d > 15000 && $0.d <= 120000 }.map { $0.loc } // Leshan, Emei
+
+        var tours: [GuidedTour] = []
+        func makeTour(from bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let upper = difficulty == .easy ? 6 : (difficulty == .moderate ? 8 : 10)
+            let count = min(max(3, bucket.count), upper)
+            let selected = Array(bucket.prefix(count))
+            let stops = selected.enumerated().map { (i, loc) in
+                TourStop(
+                    id: "cd_dyn_\(difficulty.rawValue)_\(i)_\(loc.id)",
+                    location: loc,
+                    order: i + 1,
+                    audioGuideText: generateAudioText(for: loc, in: city, index: i + 1),
+                    audioGuideURL: nil,
+                    visitDuration: loc.recommendedDuration ?? (difficulty == .easy ? 1500 : 1800),
+                    tips: loc.visitTips?.first ?? "Horaires matinaux recommandés pour les pandas; prévoyez transport pour Leshan/Emei.",
+                    distanceFromPrevious: nil,
+                    travelTimeFromPrevious: nil,
+                    estimatedArrivalTime: nil,
+                    estimatedDepartureTime: nil
+                )
+            }
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(
+                id: "chengdu_dynamic_\(difficulty.rawValue)_\(count)",
+                title: "\(baseTitle) (\(count) arrêts)",
+                city: city,
+                description: "Itinéraire dynamique à Chengdu (\(difficulty.displayName)).",
+                duration: duration,
+                difficulty: difficulty,
+                stops: stops,
+                imageURL: nil,
+                rating: Double.random(in: 4.3...4.9),
+                price: nil
+            )
+        }
+
+        if let tClose = makeTour(from: close.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                  baseTitle: "Cité des poètes & des ruelles – Wuhou, Kuanzhai, Du Fu",
+                                  difficulty: .easy) { tours.append(tClose) }
+        if let tMedium = makeTour(from: mediumBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                   baseTitle: "Pandas & archéologie – Base des pandas, Jinsha",
+                                   difficulty: .moderate) { tours.append(tMedium) }
+        if let tWide = makeTour(from: wideBand.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) },
+                                 baseTitle: "Grands sites – Bouddha de Leshan & mont Emei",
+                                 difficulty: .challenging) { tours.append(tWide) }
+
+        if tours.isEmpty {
+            let sorted = cleaned.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            if let fb = makeTour(from: sorted, baseTitle: "Essentiels de Chengdu", difficulty: .moderate) { tours.append(fb) }
+        }
+        return tours
+    }
+
+    // Séoul
+    private func buildSeoulVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .seoul
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let center = CLLocation(latitude: getBaseCoordinates(for: city).lat, longitude: getBaseCoordinates(for: city).lng)
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.1 <= 2500 }.map { $0.0 } // Palais, Bukchon, Insadong, Jongmyo
+        let medium = withDistances.filter { $0.1 > 2500 && $0.1 <= 7000 }.map { $0.0 } // Myeongdong, Namsan, War Memorial
+        let wide = withDistances.filter { $0.1 > 7000 && $0.1 <= 20000 }.map { $0.0 } // DMZ exclue; autres périphéries
+        var tours = buildVariantsGeneric(city: city, close: close, medium: medium, wide: wide, center: center,
+                                         titles: ("Palais & quartiers historiques", "Centres animés & panoramas", "Grand panorama métropolitain"))
+        // Tours additionnels: Palais/Confucianisme et Design/Han River
+        func makeTour(_ bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let count = min(max(3, bucket.count), 10)
+            let stops = Array(bucket.prefix(count)).enumerated().map { (i, loc) in
+                TourStop(id: "seoul_extra_\(difficulty.rawValue)_\(i)_\(loc.id)", location: loc, order: i+1,
+                         audioGuideText: generateAudioText(for: loc, in: city, index: i+1), audioGuideURL: nil,
+                         visitDuration: loc.recommendedDuration ?? 1500,
+                         tips: loc.visitTips?.first ?? "Réservez les visites guidées des palais & vérifiez jours de fermeture.",
+                         distanceFromPrevious: nil, travelTimeFromPrevious: nil, estimatedArrivalTime: nil, estimatedDepartureTime: nil)
+            }
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(id: "seoul_additional_\(difficulty.rawValue)_\(count)", title: baseTitle, city: city,
+                              description: "Itinéraire thématique à Séoul.", duration: duration, difficulty: difficulty,
+                              stops: stops, imageURL: nil, rating: Double.random(in: 4.4...4.9), price: nil)
+        }
+        let palaces = cleaned.filter { $0.name.lowercased().contains("gung") || $0.name.lowercased().contains("gyeongbok") || $0.name.lowercased().contains("changdeok") || $0.name.lowercased().contains("jongmyo") }
+        if let tPalaces = makeTour(palaces, baseTitle: "Palais & sanctuaires confucéens", difficulty: .moderate) { tours.append(tPalaces) }
+        let hanRiver = cleaned.filter { $0.name.lowercased().contains("hangang") || $0.name.lowercased().contains("namsan") || $0.name.lowercased().contains("banpo") }
+        if let tHan = makeTour(hanRiver, baseTitle: "Design & panoramas – Namsan, Hangang…", difficulty: .easy) { tours.append(tHan) }
+        return tours
+    }
+
+    // Busan
+    private func buildBusanVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .busan
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let center = CLLocation(latitude: 35.1796, longitude: 129.0756)
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.1 <= 4000 }.map { $0.0 } // Jagalchi, Yongdusan
+        let medium = withDistances.filter { $0.1 > 4000 && $0.1 <= 12000 }.map { $0.0 } // Gamcheon, Gwangalli
+        let wide = withDistances.filter { $0.1 > 12000 && $0.1 <= 30000 }.map { $0.0 } // Haeundae, Haedong Yonggungsa
+        return buildVariantsGeneric(city: city, close: close, medium: medium, wide: wide, center: center,
+                                    titles: ("Vieux port & marchés", "Villages & plages", "Grand littoral – Haeundae & temples"))
+    }
+
+    // Incheon
+    private func buildIncheonVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .incheon
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let center = CLLocation(latitude: 37.4563, longitude: 126.7052)
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.1 <= 3000 }.map { $0.0 } // Chinatown, Open Port
+        let medium = withDistances.filter { $0.1 > 3000 && $0.1 <= 12000 }.map { $0.0 } // Songdo Central Park
+        let wide = withDistances.filter { $0.1 > 12000 && $0.1 <= 30000 }.map { $0.0 } // Wolmido
+        return buildVariantsGeneric(city: city, close: close, medium: medium, wide: wide, center: center,
+                                    titles: ("Port historique & Chinatown", "Ville nouvelle de Songdo", "Îles & bords de mer"))
+    }
+
+    // Daejeon
+    private func buildDaejeonVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .daejeon
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let center = CLLocation(latitude: 36.3504, longitude: 127.3845)
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.1 <= 4000 }.map { $0.0 } // Musées/Expo, Hanbat
+        let medium = withDistances.filter { $0.1 > 4000 && $0.1 <= 15000 }.map { $0.0 } // Parcs/lacs
+        let wide = withDistances.filter { $0.1 > 15000 && $0.1 <= 30000 }.map { $0.0 }
+        return buildVariantsGeneric(city: city, close: close, medium: medium, wide: wide, center: center,
+                                    titles: ("Sciences & expo", "Parcs & arboretum", "Lacs & périphéries"))
+    }
+
+    private func buildVariantsGeneric(city: City, close: [Location], medium: [Location], wide: [Location], center: CLLocation, titles: (String, String, String)) -> [GuidedTour] {
+        var tours: [GuidedTour] = []
+        func makeTour(_ bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let upper = difficulty == .easy ? 6 : (difficulty == .moderate ? 8 : 10)
+            let count = min(max(3, bucket.count), upper)
+            let selected = Array(bucket.prefix(count))
+            let stops = selected.enumerated().map { (i, loc) in
+                TourStop(
+                    id: "kr_\(city.rawValue)_\(difficulty.rawValue)_\(i)_\(loc.id)",
+                    location: loc,
+                    order: i + 1,
+                    audioGuideText: generateAudioText(for: loc, in: city, index: i + 1),
+                    audioGuideURL: nil,
+                    visitDuration: loc.recommendedDuration ?? (difficulty == .easy ? 1500 : 1800),
+                    tips: loc.visitTips?.first ?? "Préparez la T‑Money et vérifiez horaires/fermetures le lundi.",
+                    distanceFromPrevious: nil,
+                    travelTimeFromPrevious: nil,
+                    estimatedArrivalTime: nil,
+                    estimatedDepartureTime: nil
+                )
+            }
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(
+                id: "kr_\(city.rawValue)_dynamic_\(difficulty.rawValue)_\(count)",
+                title: "\(baseTitle) (\(count) arrêts)",
+                city: city,
+                description: "Itinéraire dynamique à \(city.displayName) (\(difficulty.displayName)).",
+                duration: duration,
+                difficulty: difficulty,
+                stops: stops,
+                imageURL: nil,
+                rating: Double.random(in: 4.3...4.9),
+                price: nil
+            )
+        }
+        if let t1 = makeTour(close.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }, baseTitle: titles.0, difficulty: .easy) { tours.append(t1) }
+        if let t2 = makeTour(medium.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }, baseTitle: titles.1, difficulty: .moderate) { tours.append(t2) }
+        if let t3 = makeTour(wide.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }, baseTitle: titles.2, difficulty: .challenging) { tours.append(t3) }
+        return tours
+    }
+
+    // Espagne – variantes villes
+    private func buildMadridVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .madrid
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let center = CLLocation(latitude: 40.4168, longitude: -3.7038)
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.1 <= 2000 }.map { $0.0 } // Plaza Mayor, Sol, Palais/Royal, Opera
+        let medium = withDistances.filter { $0.1 > 2000 && $0.1 <= 6000 }.map { $0.0 } // Prado, Retiro, Cibeles
+        let wide = withDistances.filter { $0.1 > 6000 && $0.1 <= 15000 }.map { $0.0 } // Castellana, quartiers nord
+        var tours = buildVariantsGeneric(city: city, close: close, medium: medium, wide: wide, center: center,
+                                         titles: ("Centro – Plaza Mayor & Sol", "Musées & parc du Retiro", "Castellana & grands boulevards"))
+
+        // Garantir ≥ 3 tours même si certains buckets ont < 3 POI (après filtrage strict)
+        if tours.count < 3 {
+            let sorted = cleaned.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            let chunkSizes = [min(5, sorted.count), min(5, max(0, sorted.count - 5)), max(0, sorted.count - 10)]
+            var start = 0
+            for (idx, size) in chunkSizes.enumerated() where size >= 3 {
+                let slice = Array(sorted[start..<min(start+size, sorted.count)])
+                start += size
+                if let t = buildQuickTour(slice, city: city, center: center, title: idx == 0 ? "Centre historique étendu" : (idx == 1 ? "Autour du Prado & Retiro" : "Castellana & barrios"), difficulty: idx == 0 ? .easy : (idx == 1 ? .moderate : .challenging)) {
+                    tours.append(t)
+                }
+            }
+        }
+
+        // Tour thématique additionnel: Triangle d'or de l'art (Prado, Reina Sofía, Thyssen)
+        let artTriangle = cleaned.filter { n in
+            let s = n.name.lowercased()
+            return s.contains("prado") || s.contains("reina") || s.contains("sofía") || s.contains("sofia") || s.contains("thyssen")
+        }
+        if let tArt = buildQuickTour(artTriangle, city: city, center: center, title: "Triangle d'or de l'art – Prado, Reina Sofía, Thyssen", difficulty: .moderate) {
+            tours.append(tArt)
+        }
+
+        return tours
+    }
+
+    private func buildQuickTour(_ locations: [Location], city: City, center: CLLocation, title: String, difficulty: TourDifficulty) -> GuidedTour? {
+        let bucket = Array(locations.prefix(8))
+        guard bucket.count >= 3 else { return nil }
+        let stops = bucket.enumerated().map { (i, loc) in
+            TourStop(
+                id: "quick_\(city.rawValue)_\(difficulty.rawValue)_\(i)_\(loc.id)",
+                location: loc,
+                order: i + 1,
+                audioGuideText: generateAudioText(for: loc, in: city, index: i + 1),
+                audioGuideURL: nil,
+                visitDuration: loc.recommendedDuration ?? (difficulty == .easy ? 1500 : 1800),
+                tips: loc.visitTips?.first ?? "Profitez des axes piétons; vérifiez les horaires des musées.",
+                distanceFromPrevious: nil,
+                travelTimeFromPrevious: nil,
+                estimatedArrivalTime: nil,
+                estimatedDepartureTime: nil
+            )
+        }
+        let duration = stops.reduce(0) { $0 + $1.visitDuration }
+        return GuidedTour(
+            id: "quick_profile_\(city.rawValue)_\(difficulty.rawValue)_\(stops.count)",
+            title: title,
+            city: city,
+            description: "Itinéraire thématique à \(city.displayName) (\(difficulty.displayName)).",
+            duration: duration,
+            difficulty: difficulty,
+            stops: stops,
+            imageURL: nil,
+            rating: Double.random(in: 4.4...4.9),
+            price: nil
+        )
+    }
+
+    // Garantit qu'il existe un mini‑tour 3 arrêts
+    @MainActor
+    private func ensureMiniTour(for city: City, from places: [Location]) {
+        // Si un tour 3 arrêts existe déjà, ne rien faire
+        if tours.contains(where: { $0.city == city && $0.stops.count == 3 }) { return }
+        let center = CLLocation(latitude: getBaseCoordinates(for: city).lat, longitude: getBaseCoordinates(for: city).lng)
+        let sorted = places.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+        guard sorted.count >= 3 else { return }
+        let selected = Array(sorted.prefix(3))
+        let stops = selected.enumerated().map { (i, loc) in
+            TourStop(id: "mini_\(city.rawValue)_\(i)_\(loc.id)", location: loc, order: i+1,
+                     audioGuideText: generateAudioText(for: loc, in: city, index: i+1), audioGuideURL: nil,
+                     visitDuration: loc.recommendedDuration ?? 1200,
+                     tips: loc.visitTips?.first ?? "Mini‑parcours idéal pour une courte visite.",
+                     distanceFromPrevious: nil, travelTimeFromPrevious: nil, estimatedArrivalTime: nil, estimatedDepartureTime: nil)
+        }
+        let duration = stops.reduce(0) { $0 + $1.visitDuration }
+        let mini = GuidedTour(
+            id: "mini_tour_\(city.rawValue)_3",
+            title: "Essentiel – 3 arrêts",
+            city: city,
+            description: "Mini‑parcours de 3 arrêts à \(city.displayName).",
+            duration: duration,
+            difficulty: .easy,
+            stops: stops,
+            imageURL: nil,
+            rating: Double.random(in: 4.3...4.9),
+            price: nil
+        )
+        tours.insert(mini, at: 0)
+    }
+
+    private func buildBarcelonaVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .barcelona
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let center = CLLocation(latitude: 41.3851, longitude: 2.1734)
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.1 <= 2000 }.map { $0.0 } // Barri Gòtic, Rambla, Plaça Reial
+        let medium = withDistances.filter { $0.1 > 2000 && $0.1 <= 6000 }.map { $0.0 } // Passeig de Gràcia, Born
+        let wide = withDistances.filter { $0.1 > 6000 && $0.1 <= 15000 }.map { $0.0 } // Montjuïc, Sagrada, Parc Güell
+        var tours = buildVariantsGeneric(city: city, close: close, medium: medium, wide: wide, center: center,
+                                         titles: ("Gòtic & Rambla", "Modernisme & avenues", "Panorama – Montjuïc & Gaudí"))
+        func makeTour(_ bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let count = min(max(3, bucket.count), 10)
+            let stops = Array(bucket.prefix(count)).enumerated().map { (i, loc) in
+                TourStop(id: "bcn_extra_\(difficulty.rawValue)_\(i)_\(loc.id)", location: loc, order: i+1,
+                         audioGuideText: generateAudioText(for: loc, in: city, index: i+1), audioGuideURL: nil,
+                         visitDuration: loc.recommendedDuration ?? 1500,
+                         tips: loc.visitTips?.first ?? "Achetez vos billets Gaudí à l'avance.",
+                         distanceFromPrevious: nil, travelTimeFromPrevious: nil, estimatedArrivalTime: nil, estimatedDepartureTime: nil)
+            }
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(id: "barcelona_additional_\(difficulty.rawValue)_\(count)", title: baseTitle, city: city,
+                              description: "Itinéraire thématique à Barcelone.", duration: duration, difficulty: difficulty,
+                              stops: stops, imageURL: nil, rating: Double.random(in: 4.4...4.9), price: nil)
+        }
+        let gaudi = cleaned.filter { $0.name.lowercased().contains("gaudí") || $0.name.lowercased().contains("sagrada") || $0.name.lowercased().contains("güell") }
+        if let tGaudi = makeTour(gaudi, baseTitle: "Route Gaudí – Sagrada, Güell…", difficulty: .moderate) { tours.append(tGaudi) }
+
+        // Fallback: garantir ≥ 3 tours même si le filtrage strict réduit la data
+        if tours.count < 3 {
+            let sorted = cleaned.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            let slices: [[Location]] = [Array(sorted.prefix(6)), Array(sorted.dropFirst(6).prefix(6)), Array(sorted.dropFirst(12).prefix(6))]
+            let titles = ["Gòtic étendu", "Eixample & modernisme", "Montjuïc & panoramas"]
+            for (idx, slice) in slices.enumerated() where slice.count >= 3 {
+                if let t = buildQuickTour(slice, city: city, center: center, title: titles[idx], difficulty: idx == 0 ? .easy : (idx == 1 ? .moderate : .challenging)) {
+                    tours.append(t)
+                }
+            }
+        }
+        return tours
+    }
+
+    private func buildValenciaVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .valencia
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let center = CLLocation(latitude: 39.4699, longitude: -0.3763)
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.1 <= 2500 }.map { $0.0 } // Cathédrale, Lonja, Plaza de la Virgen
+        let medium = withDistances.filter { $0.1 > 2500 && $0.1 <= 8000 }.map { $0.0 } // Turia, Cité des Arts & des Sciences
+        let wide = withDistances.filter { $0.1 > 8000 && $0.1 <= 15000 }.map { $0.0 } // Plages, périphérie
+        var tours = buildVariantsGeneric(city: city, close: close, medium: medium, wide: wide, center: center,
+                                         titles: ("Centre historique", "Turia & Cité des Arts", "Mer & plages"))
+
+        // Tour thématique: Cité des Arts & des Sciences
+        let arts = cleaned.filter { n in
+            let s = n.name.lowercased()
+            return s.contains("ciudad de las artes") || s.contains("cité des arts") || s.contains("calatrava") || s.contains("hemisfèric") || s.contains("oceanogràfic") || s.contains("oceanographic")
+        }
+        if let tArts = buildQuickTour(arts, city: city, center: center, title: "Cité des Arts & des Sciences", difficulty: .moderate) {
+            tours.append(tArts)
+        }
+
+        // Fallback pour garantir ≥ 3 tours
+        if tours.count < 3 {
+            let sorted = cleaned.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            let slices: [[Location]] = [Array(sorted.prefix(6)), Array(sorted.dropFirst(6).prefix(6)), Array(sorted.dropFirst(12).prefix(6))]
+            let titles = ["Vieille ville étendue", "Turia & musées", "Port & plages"]
+            for (idx, slice) in slices.enumerated() where slice.count >= 3 {
+                if let t = buildQuickTour(slice, city: city, center: center, title: titles[idx], difficulty: idx == 0 ? .easy : (idx == 1 ? .moderate : .challenging)) {
+                    tours.append(t)
+                }
+            }
+        }
+        return tours
+    }
+
+    private func buildSevilleVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .seville
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let center = CLLocation(latitude: 37.3891, longitude: -5.9845)
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.1 <= 2500 }.map { $0.0 } // Cathédrale, Alcazar, Santa Cruz
+        let medium = withDistances.filter { $0.1 > 2500 && $0.1 <= 7000 }.map { $0.0 } // Plaza de España, Parc Maria Luisa
+        let wide = withDistances.filter { $0.1 > 7000 && $0.1 <= 15000 }.map { $0.0 } // Triana et rives
+        var tours = buildVariantsGeneric(city: city, close: close, medium: medium, wide: wide, center: center,
+                                         titles: ("Cathédrale & Alcazar", "Plaza de España & parcs", "Rives du Guadalquivir & Triana"))
+
+        // Fallback: garantir ≥ 3 tours (après filtrage strict)
+        if tours.count < 3 {
+            let sorted = cleaned.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            let slices: [[Location]] = [Array(sorted.prefix(6)), Array(sorted.dropFirst(6).prefix(6)), Array(sorted.dropFirst(12).prefix(6))]
+            let titles = ["Centre historique étendu", "Parcs & Plaza de España", "Triana & rives du fleuve"]
+            for (idx, slice) in slices.enumerated() where slice.count >= 3 {
+                if let t = buildQuickTour(slice, city: city, center: center, title: titles[idx], difficulty: idx == 0 ? .easy : (idx == 1 ? .moderate : .challenging)) {
+                    tours.append(t)
+                }
+            }
+        }
+        return tours
+    }
+
+    private func buildMalagaVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .malaga
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let center = CLLocation(latitude: 36.7213, longitude: -4.4217)
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.1 <= 2500 }.map { $0.0 } // Alcazaba, Cathédrale, Picasso
+        let medium = withDistances.filter { $0.1 > 2500 && $0.1 <= 7000 }.map { $0.0 } // Gibralfaro, Muelle Uno
+        let wide = withDistances.filter { $0.1 > 7000 && $0.1 <= 15000 }.map { $0.0 } // Plages
+        var tours = buildVariantsGeneric(city: city, close: close, medium: medium, wide: wide, center: center,
+                                         titles: ("Centre historique & musées", "Forteresses & panorama", "Port & plages"))
+
+        // Fallback: garantir ≥ 3 tours
+        if tours.count < 3 {
+            let sorted = cleaned.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            let slices: [[Location]] = [Array(sorted.prefix(6)), Array(sorted.dropFirst(6).prefix(6)), Array(sorted.dropFirst(12).prefix(6))]
+            let titles = ["Vieille ville & musées", "Forteresse & belvédères", "Port & front de mer"]
+            for (idx, slice) in slices.enumerated() where slice.count >= 3 {
+                if let t = buildQuickTour(slice, city: city, center: center, title: titles[idx], difficulty: idx == 0 ? .easy : (idx == 1 ? .moderate : .challenging)) {
+                    tours.append(t)
+                }
+            }
+        }
+        return tours
+    }
+
+    // France – variantes
+    private func buildParisVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .paris
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let center = CLLocation(latitude: 48.8566, longitude: 2.3522)
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.1 <= 2500 }.map { $0.0 } // Île de la Cité, Louvre, Marais
+        let medium = withDistances.filter { $0.1 > 2500 && $0.1 <= 6000 }.map { $0.0 } // Champs‑Élysées, Opéra, Montmartre
+        let wide = withDistances.filter { $0.1 > 6000 && $0.1 <= 12000 }.map { $0.0 } // Tour Eiffel, Invalides, Trocadéro
+        var tours = buildVariantsGeneric(city: city, close: close, medium: medium, wide: wide, center: center,
+                                         titles: ("Cité, Louvre & Marais", "Grands boulevards & Montmartre", "Rive gauche & Tour Eiffel"))
+
+        // Ajouter au moins un tour thématique supplémentaire pour les grandes villes
+        func makeTour(_ bucket: [Location], baseTitle: String, difficulty: TourDifficulty) -> GuidedTour? {
+            guard bucket.count >= 3 else { return nil }
+            let count = min(max(3, bucket.count), 10)
+            let selected = Array(bucket.prefix(count))
+            let stops = selected.enumerated().map { (i, loc) in
+                TourStop(
+                    id: "par_extra_\(difficulty.rawValue)_\(i)_\(loc.id)",
+                    location: loc,
+                    order: i + 1,
+                    audioGuideText: generateAudioText(for: loc, in: city, index: i + 1),
+                    audioGuideURL: nil,
+                    visitDuration: loc.recommendedDuration ?? (difficulty == .easy ? 1500 : 1800),
+                    tips: loc.visitTips?.first ?? "Prévoyez des réservations pour les grands musées.",
+                    distanceFromPrevious: nil,
+                    travelTimeFromPrevious: nil,
+                    estimatedArrivalTime: nil,
+                    estimatedDepartureTime: nil
+                )
+            }
+            let duration = stops.reduce(0) { $0 + $1.visitDuration }
+            return GuidedTour(
+                id: "paris_additional_\(difficulty.rawValue)_\(count)",
+                title: baseTitle,
+                city: city,
+                description: "Itinéraire thématique à Paris (\(difficulty.displayName)).",
+                duration: duration,
+                difficulty: difficulty,
+                stops: stops,
+                imageURL: nil,
+                rating: Double.random(in: 4.4...4.9),
+                price: nil
+            )
+        }
+
+        let museums = cleaned.filter { $0.category == .museum }
+        if let tMuseums = makeTour(museums, baseTitle: "Musées & chefs‑d'œuvre", difficulty: .moderate) {
+            tours.append(tMuseums)
+        }
+        let gardens = cleaned.filter { $0.category == .nature }
+        if let tParks = makeTour(gardens, baseTitle: "Parcs & jardins – Luxembourg, Tuileries…", difficulty: .easy) {
+            tours.append(tParks)
+        }
+        return tours
+    }
+
+    private func buildLyonVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .lyon
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let center = CLLocation(latitude: 45.7640, longitude: 4.8357)
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.1 <= 2000 }.map { $0.0 } // Vieux Lyon, Cathédrale, Saint‑Jean
+        let medium = withDistances.filter { $0.1 > 2000 && $0.1 <= 6000 }.map { $0.0 } // Fourvière, Terreaux
+        let wide = withDistances.filter { $0.1 > 6000 && $0.1 <= 12000 }.map { $0.0 } // Tête d'Or, Confluences
+        var tours = buildVariantsGeneric(city: city, close: close, medium: medium, wide: wide, center: center,
+                                         titles: ("Vieux Lyon & Presqu'île", "Fourvière & Terreaux", "Parcs & Confluences"))
+        if tours.count < 3 {
+            let sorted = cleaned.sorted { center.distance(from: $0.clLocation) < center.distance(from: $1.clLocation) }
+            let slices: [[Location]] = [Array(sorted.prefix(6)), Array(sorted.dropFirst(6).prefix(6)), Array(sorted.dropFirst(12).prefix(6))]
+            let titles = ["Centre & Vieux Lyon", "Musées & collines", "Parcs & berges"]
+            for (idx, slice) in slices.enumerated() where slice.count >= 3 {
+                if let t = buildQuickTour(slice, city: city, center: center, title: titles[idx], difficulty: idx == 0 ? .easy : (idx == 1 ? .moderate : .challenging)) {
+                    tours.append(t)
+                }
+            }
+        }
+        return tours
+    }
+
+    private func buildMarseilleVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .marseille
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let center = CLLocation(latitude: 43.2965, longitude: 5.3698)
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.1 <= 2500 }.map { $0.0 } // Vieux‑Port, Le Panier, Major
+        let medium = withDistances.filter { $0.1 > 2500 && $0.1 <= 8000 }.map { $0.0 } // MuCEM, Longchamp
+        let wide = withDistances.filter { $0.1 > 8000 && $0.1 <= 15000 }.map { $0.0 } // Notre‑Dame, Corniche
+        return buildVariantsGeneric(city: city, close: close, medium: medium, wide: wide, center: center,
+                                    titles: ("Vieux‑Port & Panier", "Musées & palais", "Hauteurs & mer"))
+    }
+
+    private func buildNiceVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .nice
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let center = CLLocation(latitude: 43.7102, longitude: 7.2620)
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.1 <= 2000 }.map { $0.0 } // Vieille Ville, Cours Saleya
+        let medium = withDistances.filter { $0.1 > 2000 && $0.1 <= 6000 }.map { $0.0 } // Colline du Château, Masséna
+        let wide = withDistances.filter { $0.1 > 6000 && $0.1 <= 12000 }.map { $0.0 } // Promenade, Cimiez
+        return buildVariantsGeneric(city: city, close: close, medium: medium, wide: wide, center: center,
+                                    titles: ("Vieille Ville & marchés", "Belvédères & places", "Promenade & musées"))
+    }
+
+    private func buildBordeauxVariants(from places: [Location]) -> [GuidedTour] {
+        let city: City = .bordeaux
+        guard !places.isEmpty else { return createMockToursForCity(city) }
+        let center = CLLocation(latitude: 44.8378, longitude: -0.5792)
+        let cleaned = deduplicateAndRefine(locations: places, for: city)
+        let withDistances = cleaned.map { ($0, center.distance(from: $0.clLocation)) }
+        let close = withDistances.filter { $0.1 <= 2000 }.map { $0.0 } // Place de la Bourse, Miroir d'eau
+        let medium = withDistances.filter { $0.1 > 2000 && $0.1 <= 6000 }.map { $0.0 } // Quinconces, Saint‑André
+        let wide = withDistances.filter { $0.1 > 6000 && $0.1 <= 12000 }.map { $0.0 } // Cité du Vin, rive gauche
+        return buildVariantsGeneric(city: city, close: close, medium: medium, wide: wide, center: center,
+                                    titles: ("Bourse & centre classique", "Allées & cathédrale", "Garonne & Cité du Vin"))
+    }
+
+    // MARK: - Génération d'un vrai titre de tour à partir des arrêts
+    private func generateTourTitle(for city: City, stops: [TourStop], index: Int) -> String {
+        // Compter les catégories
+        let counts = Dictionary(grouping: stops, by: { $0.location.category })
+            .mapValues { $0.count }
+        // Catégorie majoritaire
+        let dominant = counts.sorted { $0.value > $1.value }.first?.key
+        // Spécial Luxembourg
+        if city == .luxembourg {
+            switch dominant {
+            case .historical: return "Vieux Luxembourg & fortifications"
+            case .museum: return "Musées & culture à Luxembourg"
+            case .nature: return "Parcs & vallées de Luxembourg"
+            case .religious: return "Cathédrale & clochers de la Ville Haute"
+            case .culture: return "Places emblématiques & ambiance de la Ville Haute"
+            default:
+                let highlight = stops.first?.location.name ?? city.displayName
+                return "\(highlight) et alentours"
+            }
+        }
+        // Génériques pour autres villes
+        if let dom = dominant {
+            let theme: String
+            switch dom {
+            case .historical: theme = "Parcours historique"
+            case .museum: theme = "Musées & arts"
+            case .nature: theme = "Parcs & panoramas"
+            case .religious: theme = "Patrimoine religieux"
+            case .culture: theme = "Culture & places vivantes"
+            default: theme = "Découverte urbaine"
+            }
+            return "\(city.displayName): \(theme)"
+        }
+        let highlight = stops.first?.location.name ?? city.displayName
+        return "\(highlight) et alentours"
+    }
+
+    // MARK: - Tour Nature Luxembourg (cascades & paysages)
+    private func buildLuxembourgNatureTour() -> GuidedTour {
+        let city: City = .luxembourg
+        var stops: [TourStop] = []
+        var orderIndex = 0
+        func addStop(id: String, name: String, address: String, lat: Double, lon: Double, category: LocationCategory, duration: TimeInterval = 1800) {
+            let loc = Location(
+                id: id,
+                name: name,
+                address: address,
+                latitude: lat,
+                longitude: lon,
+                category: category,
+                description: nil,
+                imageURL: nil,
+                rating: nil,
+                openingHours: nil,
+                recommendedDuration: duration,
+                visitTips: ["Chaussures de marche recommandées"]
+            )
+            let stop = TourStop(
+                id: id,
+                location: loc,
+                order: orderIndex,
+                audioGuideText: buildAIAudioGuideText(for: loc, in: city, index: orderIndex + 1),
+                audioGuideURL: nil,
+                visitDuration: duration,
+                tips: "Restez sur les sentiers balisés",
+                distanceFromPrevious: nil,
+                travelTimeFromPrevious: nil,
+                estimatedArrivalTime: nil,
+                estimatedDepartureTime: nil
+            )
+            stops.append(stop)
+            orderIndex += 1
+        }
+
+        // 1) Schiessentümpel – cascade iconique (Mullerthal)
+        addStop(
+            id: "lu_nature_schiessentumpel",
+            name: "Cascade de Schiessentümpel",
+            address: "CR121, 6245 Müllerthal, Luxembourg",
+            lat: 49.7937,
+            lon: 6.3522,
+            category: .nature,
+            duration: 2100
+        )
+        // 2) Heringer Millen – Centre Mullerthal Trail
+        addStop(
+            id: "lu_nature_heringer_millen",
+            name: "Heringer Millen – Centre Mullerthal Trail",
+            address: "1 Rue des Moulins, 6245 Müllerthal, Luxembourg",
+            lat: 49.7930,
+            lon: 6.3463,
+            category: .nature,
+            duration: 1800
+        )
+        // 3) Hohllay – grotte de grès (Berdorf)
+        addStop(
+            id: "lu_nature_hohllay",
+            name: "Grotte Hohllay (Berdorf)",
+            address: "Hohllay, 6550 Berdorf, Luxembourg",
+            lat: 49.8239,
+            lon: 6.3509,
+            category: .nature,
+            duration: 1800
+        )
+        // 4) Château de Beaufort & vallée – panorama nature
+        addStop(
+            id: "lu_nature_beaufort",
+            name: "Château de Beaufort – Vallée du Müllerthal",
+            address: "24 Rue du Château, 6310 Beaufort, Luxembourg",
+            lat: 49.8359,
+            lon: 6.2870,
+            category: .historical,
+            duration: 1800
+        )
+        // 5) Esch‑sur‑Sûre – lac de la Haute‑Sûre (belvédère)
+        addStop(
+            id: "lu_nature_esch_sure",
+            name: "Lac de la Haute‑Sûre – Belvédère d’Esch‑sur‑Sûre",
+            address: "1 Rue du Château, 9650 Esch‑sur‑Sûre, Luxembourg",
+            lat: 49.9111,
+            lon: 5.9347,
+            category: .nature,
+            duration: 2100
+        )
+
+        let totalDuration = stops.reduce(0) { $0 + $1.visitDuration }
+        return GuidedTour(
+            id: "nature_luxembourg_mullerthal",
+            title: "Luxembourg Nature & Cascades (Mullerthal)",
+            city: city,
+            description: "Un itinéraire nature autour de Luxembourg: cascades, grottes et panoramas entre Mullerthal et la Haute‑Sûre.",
+            duration: totalDuration,
+            difficulty: .moderate,
+            stops: stops,
+            imageURL: nil,
+            rating: 4.8,
+            price: nil
+        )
+    }
+
+    // MARK: - Génération d'un texte audio IA local (sans clé)
+    // Objectif: durée 30s à 150s (~300 à 1500 caractères avec notre estimation 0,1s/caractère)
+    private func buildAIAudioGuideText(for location: Location, in city: City, index: Int) -> String {
+        let importantCategories: Set<LocationCategory> = [.historical, .museum, .religious, .culture]
+        let isImportant = importantCategories.contains(location.category)
+        var targetSeconds = Int.random(in: (isImportant ? 60...120 : 30...90))
+        if let rec = location.recommendedDuration, rec >= 7200 { // lieux majeurs
+            targetSeconds = min(120, max(targetSeconds, 90))
+        }
+        let targetChars = targetSeconds * 10 // car AudioService ~0,1s/caractère
+
+        let cityName = city.displayName
+        let name = location.name
+        let addr = location.address
+        let cat = location.category.displayName.lowercased()
+
+        let openers = [
+            "Arrêt numéro \(index).",
+            "Nous voici devant un incontournable de \(cityName).",
+            "Bienvenue à \(name).",
+            "Découvrons ensemble \(name)."
+        ]
+        let facts = [
+            "Ce lieu \(cat) occupe une place majeure dans la vie de la ville et attire des visiteurs du monde entier.",
+            "Son architecture mêle héritage historique et transformations plus récentes visibles dans ses façades et ses volumes.",
+            "Les alentours offrent de beaux points de vue pour les photos: prenez le temps d'observer les détails.",
+            "Au fil des siècles, l'endroit a connu plusieurs restaurations, chacune laissant une signature distincte.",
+            "Les matériaux employés témoignent du savoir‑faire local et des échanges commerciaux de l'époque.",
+            "Le quartier environnant abrite également des cafés et des ruelles charmantes pour une promenade.",
+            "Le site s'apprécie à toute heure de la journée, avec des ambiances très différentes selon la lumière.",
+            "De nombreux événements culturels s'y déroulent chaque année, renforçant son rôle de lieu de rencontre.",
+            "En vous approchant, remarquez la symétrie des lignes et les ornements, souvent inspirés de motifs régionaux.",
+            "N'hésitez pas à lever les yeux: certains éléments sculptés se révèlent seulement sous certains angles."
+        ]
+        let helpers = [
+            "Astuce: prévoyez quelques minutes supplémentaires pour apprécier la perspective depuis l'angle opposé.",
+            "Conseil: si la foule est dense, patientez un instant: la vue s'ouvre fréquemment entre deux groupes.",
+            "Pensez à régler la luminosité de votre appareil photo: les contrastes peuvent être marqués ici.",
+            "Si vous aimez l'histoire, retenez quelques détails: ils donnent tout leur sens à la visite.",
+            "Prenez un moment pour écouter l'ambiance du quartier: c'est aussi cela, l'esprit de \(cityName)."
+        ]
+
+        var text = "\(openers.randomElement() ?? "Arrêt numéro \(index).") Situé au \(addr), \(name) est un lieu \(cat) emblématique de \(cityName). "
+        // Ajouter des phrases jusqu'à atteindre la cible (30s–120s, ~0,1s/caractère)
+        var pool = facts.shuffled() + helpers.shuffled()
+        var i = 0
+        while text.count < targetChars {
+            text += (pool[i % pool.count]) + " "
+            i += 1
+        }
+        // Conclusion courte
+        text += "Profitez de votre passage pour savourer l'atmosphère unique de ce lieu avant la prochaine étape."
+        return text
+    }
+
+    // Génère un audio ciblé en priorité sur textes spécifiques, sinon IA contrainte
+    private func generateAudioText(for location: Location, in city: City, index: Int) -> String {
+        let specific = getAudioGuideText(for: location.name, in: city, index: index)
+        if specific.starts(with: "Bienvenue à ") { // fallback générique → produire IA contrainte
+            return buildAIAudioGuideText(for: location, in: city, index: index)
+        }
+        // Contraindre la durée entre 30s et 120s (~0,1s/caractère)
+        let minChars = 30 * 10
+        let maxChars = 120 * 10
+        var text = specific
+        if text.count < minChars {
+            let cityName = city.displayName
+            let fillers = [
+                "Prenez un instant pour observer les détails architecturaux qui racontent l'histoire du lieu.",
+                "L'environnement immédiat offre de beaux points de vue pour vos photos.",
+                "Ce site est un repère incontournable de \(cityName), fréquenté par visiteurs et habitants.",
+                "Laissez-vous guider par l'ambiance: sons de la ville, lumière changeante, et vie locale.",
+                "Quelques pas plus loin, d'autres perspectives révèlent la composition du site."
+            ]
+            var i = 0
+            while text.count < minChars {
+                text += " " + fillers[i % fillers.count]
+                i += 1
+            }
+        }
+        if text.count > maxChars {
+            // Tronquer proprement à la dernière phrase complète avant la limite
+            let endIndex = text.index(text.startIndex, offsetBy: maxChars)
+            let truncated = String(text[..<endIndex])
+            if let lastDotRange = truncated.range(of: ".", options: .backwards) {
+                text = String(truncated[..<lastDotRange.upperBound])
+            } else {
+                text = truncated + "…"
+            }
+        }
+        return text
+    }
+
+    // Déduplique et affine les noms pour éviter doublons et noms vagues
+    private func deduplicateAndRefine(locations: [Location], for city: City) -> [Location] {
+        var seen = Set<String>()
+        var result: [Location] = []
+        for loc in locations {
+            let refined = refineName(loc.name, city: city)
+            let key = refined.lowercased()
+            if seen.contains(key) { continue }
+            seen.insert(key)
+            if refined != loc.name {
+                let updated = Location(
+                    id: loc.id,
+                    name: refined,
+                    address: loc.address,
+                    latitude: loc.latitude,
+                    longitude: loc.longitude,
+                    category: loc.category,
+                    description: loc.description,
+                    imageURL: loc.imageURL,
+                    rating: loc.rating,
+                    openingHours: loc.openingHours,
+                    recommendedDuration: loc.recommendedDuration,
+                    visitTips: loc.visitTips
+                )
+                result.append(updated)
+            } else {
+                result.append(loc)
+            }
+        }
+        return result
+    }
+
+    private func refineName(_ raw: String, city: City) -> String {
+        let lower = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if lower == "parc" {
+            switch city { case .brussels: return "Parc de Bruxelles (Warandepark)"; default: break }
+        }
+        if lower.contains("cinematek") { return "CINEMATEK – Musée du Cinéma" }
+        if lower.contains("mont des arts") { return "Jardin du Mont des Arts" }
+        if lower.contains("grand place") || lower.contains("grand-place") { return "Grand‑Place de Bruxelles" }
+        if lower.contains("galeries") && lower.contains("saint") { return "Galeries Royales Saint‑Hubert" }
+        if city == .bruges {
+            if lower == "markt" || lower.contains("market") { return "Markt – Grand‑Place de Bruges" }
+            if lower.contains("belfort") || lower.contains("beffroi") { return "Beffroi de Bruges" }
+            if lower == "burg" { return "Burg – Basilique du Saint‑Sang" }
+            if lower.contains("sint-salvator") || lower.contains("saint-sauveur") { return "Cathédrale Saint‑Sauveur" }
+            if lower.contains("mariastraat") || lower.contains("notre-dame") { return "Église Notre‑Dame de Bruges" }
+            if lower.contains("rozenhoedkaai") { return "Rozenhoedkaai – Quai du Rosaire" }
+            if lower.contains("groeninge") { return "Musée Groeninge" }
+            if lower.contains("jan van eyck") { return "Place Jan van Eyck" }
+            if lower.contains("minnewater") { return "Minnewater – Lac d'Amour" }
+            if lower.contains("béguin") || lower.contains("beguin") { return "Béguinage de Bruges" }
+        }
+        
+        if city == .antwerp {
+            if lower == "grote markt" { return "Grote Markt – Grand‑Place d'Anvers" }
+            if lower.contains("kathedraal") || lower.contains("cathédrale") || lower.contains("notre-dame") { return "Cathédrale Notre‑Dame d'Anvers" }
+            if lower == "meir" || lower.contains("meir ") { return "Meir – Hôtels particuliers et commerces" }
+            if lower.contains("rubenshuis") || lower.contains("rubens") { return "Rubenshuis – Maison de Rubens" }
+            if lower == "mas" || lower.contains("museum aan de stroom") { return "MAS – Museum aan de Stroom" }
+            if lower.contains("groenplaats") { return "Groenplaats" }
+        }
+        if city == .beijing {
+            if lower.contains("forbidden") || lower.contains("cité interdite") { return "Cité interdite (Palace Museum)" }
+            if lower.contains("tiananmen") || lower.contains("tian'anmen") { return "Place Tian'anmen" }
+            if lower.contains("temple of heaven") || lower.contains("temple du ciel") || lower.contains("tiantan") { return "Temple du Ciel (Tiantan)" }
+            if lower.contains("summer palace") || lower.contains("palais d'été") { return "Palais d'Été" }
+            if lower.contains("mutianyu") || lower.contains("great wall") || lower.contains("grande muraille") { return "Grande Muraille – Mutianyu" }
+            if lower.contains("yonghe") || lower.contains("lama temple") || lower.contains("yonghegong") { return "Temple des Lamas (Yonghe)" }
+            if lower.contains("confucius") || lower.contains("guozijian") { return "Temple de Confucius & Guozijian" }
+            if lower.contains("beihai") { return "Parc Beihai" }
+            if lower.contains("jingshan") { return "Parc Jingshan" }
+            if lower.contains("hutong") || lower.contains("nanluoguxiang") { return "Hutongs – Nanluoguxiang" }
+        }
+        if city == .shanghai {
+            if lower.contains("bund") { return "Le Bund" }
+            if lower.contains("people's square") || lower.contains("place du peuple") { return "Place du Peuple" }
+            if lower.contains("shanghai museum") || lower.contains("musée de shanghai") { return "Musée de Shanghai" }
+            if lower.contains("yu garden") || lower.contains("yuyuan") { return "Jardin Yu (Yuyuan)" }
+            if lower.contains("nanjing road") { return "Nanjing Road" }
+            if lower.contains("tianzifang") { return "Tianzifang" }
+            if lower.contains("xintiandi") { return "Xintiandi" }
+            if lower.contains("shanghai tower") { return "Shanghai Tower" }
+            if lower.contains("world financial center") || lower.contains("swfc") { return "Shanghai World Financial Center (SWFC)" }
+            if lower.contains("aquarium") { return "Aquarium océanique de Shanghai" }
+        }
+        if city == .xian {
+            if lower.contains("terracotta") || lower.contains("terre cuite") { return "Armée de terre cuite" }
+            if lower.contains("city wall") || lower.contains("muraille") { return "Muraille de Xi'an" }
+            if lower.contains("muslim quarter") || lower.contains("quartier musulman") { return "Quartier musulman" }
+            if lower.contains("great mosque") || lower.contains("mosquée") { return "Grande Mosquée de Xi'an" }
+            if lower.contains("bell tower") || lower.contains("cloche") { return "Tour de la Cloche" }
+            if lower.contains("drum tower") || lower.contains("tambour") { return "Tour du Tambour" }
+            if lower.contains("wild goose pagoda") || lower.contains("oie sauvage") { return "Pagode de la Grande Oie sauvage" }
+            if lower.contains("shaanxi history museum") || lower.contains("musée du shaanxi") { return "Musée d'histoire du Shaanxi" }
+            if lower.contains("huaqing") { return "Huaqing Palace" }
+            if lower.contains("banpo") { return "Musée du site néolithique de Banpo" }
+        }
+        if city == .chengdu {
+            if lower.contains("panda") { return "Base de recherche des pandas géants" }
+            if lower.contains("wuhou") { return "Temple Wuhou" }
+            if lower.contains("kuanzhai") { return "Ruelles Kuanzhai" }
+            if lower.contains("du fu") { return "Chaumière de Du Fu" }
+            if lower.contains("jinsha") { return "Musée du site de Jinsha" }
+            if lower.contains("leshan") { return "Grand Bouddha de Leshan" }
+            if lower.contains("emei") { return "Mont Emei" }
+        }
+        if city == .seoul {
+            if lower.contains("gyeongbok") { return "Palais Gyeongbokgung" }
+            if lower.contains("changdeok") { return "Palais Changdeokgung & Huwon" }
+            if lower.contains("jongmyo") { return "Sanctuaire Jongmyo" }
+            if lower.contains("bukchon") { return "Village hanok de Bukchon" }
+            if lower.contains("insadong") { return "Insadong" }
+            if lower.contains("myeongdong") { return "Myeong‑dong" }
+            if lower.contains("namsan") || lower.contains("n seoul tower") { return "Namsan & N Seoul Tower" }
+            if lower.contains("war memorial") { return "War Memorial of Korea" }
+        }
+        if city == .busan {
+            if lower.contains("haeundae") { return "Plage de Haeundae" }
+            if lower.contains("gamcheon") { return "Village culturel de Gamcheon" }
+            if lower.contains("jagalchi") { return "Marché aux poissons de Jagalchi" }
+            if lower.contains("haedong") { return "Temple Haedong Yonggungsa" }
+            if lower.contains("gwangan") || lower.contains("gwangalli") { return "Pont Gwangan & plage Gwangalli" }
+            if lower.contains("yongdusan") { return "Parc Yongdusan & tour de Busan" }
+        }
+        if city == .incheon {
+            if lower.contains("chinatown") { return "Chinatown d'Incheon" }
+            if lower.contains("songdo") { return "Songdo Central Park" }
+            if lower.contains("wolmido") { return "Île Wolmido" }
+            if lower.contains("sinpo") { return "Marché de Sinpo" }
+            if lower.contains("open port") { return "Musée de l'Open Port" }
+        }
+        if city == .daejeon {
+            if lower.contains("expo") { return "Parc Expo Daejeon" }
+            if lower.contains("daecheong") { return "Lac Daecheong" }
+            if lower.contains("uamyang") || lower.contains("uame") { return "Uam Historical Park" }
+            if lower.contains("hanbat") { return "Arboretum Hanbat" }
+            if lower.contains("national science") { return "Musée national des sciences de Corée" }
+        }
+        return raw
+    }
+
+    // Parcs/jardins emblématiques autorisés en "nature"
+    private func isNotableNature(_ loc: Location, in city: City) -> Bool {
+        let n = loc.name.lowercased()
+        switch city {
+        case .paris:
+            return n.contains("tuileries") || n.contains("luxembourg") || n.contains("buttes-chaumont")
+        case .barcelona:
+            return n.contains("parc güell") || n.contains("guell") || n.contains("montjuïc")
+        case .madrid:
+            return n.contains("retiro") || n.contains("casa de campo")
+        case .munich:
+            return n.contains("englischer garten") || n.contains("olympia")
+        case .hamburg:
+            return n.contains("planten un blomen") || n.contains("alster")
+        case .brussels:
+            return n.contains("cinquantenaire") || n.contains("parc de bruxelles") || n.contains("warande")
+        case .luxembourg:
+            return n.contains("pétrusse") || n.contains("grund")
+        default:
+            return loc.rating ?? 4.5 > 4.5 // heuristique: garder seulement les très bien notés
+        }
+    }
+
+    // Règle unique de filtrage des POI autorisés
+    private func isAllowedPOI(_ loc: Location, in city: City) -> Bool {
+        let allowed: Set<LocationCategory> = [.historical, .museum, .religious, .culture, .nature]
+        if !allowed.contains(loc.category) { return false }
+        if loc.category == .nature { return isNotableNature(loc, in: city) }
+        // Exclure commerces/centres commerciaux/entertainment même si mal catégorisés
+        let n = loc.name.lowercased()
+        let bannedKeywords = ["mall", "shopping", "center", "centre commercial", "casino", "amusement", "club", "bar", "night", "aquapark", "zoo", "aquarium"]
+        if bannedKeywords.contains(where: { n.contains($0) }) { return false }
+        return true
     }
     
     // MARK: - Créer des tours génériques pour une ville
@@ -283,13 +3156,565 @@ class GuidedToursViewModel: ObservableObject {
                 duration: TimeInterval(stopCount * 900), // 15 min par arrêt
                 difficulty: TourDifficulty.allCases.randomElement() ?? .easy,
                 stops: mockStops,
-                imageURL: nil,
+                imageURL: getTourImageURL(for: tourTitle, in: city),
                 rating: Double.random(in: 4.0...5.0),
                 price: Bool.random() ? Double.random(in: 0...25) : nil
             )
         }
     }
     
+    // MARK: - Texte audio simplifié (fallback générique)
+    private func getAudioGuideText(for locationName: String, in city: City, index: Int) -> String {
+        // Narrations écrites à la main pour les principaux lieux du Luxembourg
+        if city == .luxembourg {
+            switch locationName {
+            case "Palais grand-ducal":
+                return "Vous êtes devant le Palais grand‑ducal, résidence officielle du Grand‑Duc. Reconstruit au XIXe siècle dans un style Renaissance flamande, il se distingue par sa façade richement sculptée et ses balcons en fer forgé. Pendant l’été, l’intérieur s’ouvre au public: on y découvre les salons d’apparat où sont reçus chefs d’État et délégations. Observez la garde qui se relève à intervalles réguliers, et la succession de lucarnes et de tourelles qui rythment la toiture."
+            case "Cathédrale Notre-Dame de Luxembourg":
+                return "La cathédrale Notre‑Dame, édifiée au XVIIe siècle par les Jésuites, mêle gothique tardif et influences Renaissance. Sa crypte abrite la chapelle du ‘Christ Consolateur’ et les sépultures de la famille grand‑ducale. À l’intérieur, vitraux contemporains et orgue monumental soulignent la verticalité de l’édifice. Faites le tour du chœur pour admirer les boiseries, puis levez les yeux vers les voûtes nervurées."
+            case "Place Guillaume II (Knuedler)":
+                return "Bienvenue sur la Place Guillaume II, surnommée ‘Knuedler’. Ancien parvis d’un couvent franciscain, elle est aujourd’hui le cœur civique de la Ville Haute, dominée par l’Hôtel de Ville. Au centre, la statue équestre du roi‑grand‑duc Guillaume II. Les marchés et événements y animent régulièrement la place. Depuis ce point, rejoignez rapidement la Place d’Armes ou les ruelles commerçantes adjacentes."
+            case "Musée Dräi Eechelen":
+                return "Le musée Dräi Eechelen occupe l’ancien Fort Thüngen, élément des fortifications de la ville. Ses galeries retracent l’histoire du Luxembourg, de la forteresse européenne à la capitale moderne. En sortant, profitez du parc environnant: le panorama englobe le quartier du Kirchberg et ses institutions. Les trois ‘glands’ qui donnent leur nom au fort évoquent les anciennes tourelles."
+            case "Pont Adolphe":
+                return "Le Pont Adolphe, inauguré en 1903, est un symbole de l’indépendance luxembourgeoise. Son arche principale, en pierre de taille, fut l’une des plus grandes du monde à son époque. En contrebas s’étend la vallée de la Pétrusse. Traversez le trottoir vitré aménagé lors de la rénovation récente pour une perspective vertigineuse sur le parc."
+            case "Place d'Armes":
+                return "La Place d’Armes, ‘le salon de la ville’, est bordée de terrasses et du Cercle Cité. Née au XVIIIe siècle comme lieu de rassemblement, elle accueille aujourd’hui concerts et marchés. Les façades éclectiques témoignent des grandes phases d’urbanisme de la Ville Haute. Installez‑vous quelques minutes pour ressentir l’atmosphère locale."
+            case "Gëlle Fra – Monument du Souvenir":
+                return "Dressée sur la Place de la Constitution, la Gëlle Fra, ‘femme en or’, rend hommage aux soldats luxembourgeois tombés lors des guerres mondiales. La statue, disparue sous l’occupation puis retrouvée, incarne la résilience du pays. Depuis l’esplanade, la vue s’ouvre sur la vallée de la Pétrusse et le Pont Adolphe."
+            case "Casemates du Bock":
+                return "Les Casemates du Bock composent un réseau souterrain creusé dès le XVIIe siècle dans le promontoire rocheux. Cet ‘Gibraltar du Nord’ protégeait la forteresse européenne contrôlée tour à tour par Espagnols, Français et Autrichiens. Parcourez les galeries pour apercevoir meurtrières et postes d’artillerie avec, par endroits, des fenêtres sur la vieille ville."
+            case "Musée national d'histoire et d'art (MNHA)":
+                return "Le MNHA rassemble archéologie, beaux‑arts et arts décoratifs. De la villa gallo‑romaine aux peintres luxembourgeois contemporains, la collection offre une lecture complète du territoire. Ne manquez pas les pièces médiévales et l’architecture intérieure qui guide naturellement la visite étage par étage."
+            case "Grund – Quartier historique":
+                return "En contrebas de la vieille ville, le quartier du Grund serpente le long de l’Alzette. Maisons à pignons, ponts anciens et berges fleuries composent un décor pittoresque. L’abbaye de Neumünster, reconvertie en centre culturel, accueille expositions et concerts. Montez par l’ascenseur du Pfaffenthal pour un superbe point de vue sur la vallée."
+            default:
+                break
+            }
+        }
+        // Narrations écrites à la main pour Berlin
+        if city == .berlin {
+            switch locationName {
+            case "Brandenburger Tor":
+                return "La porte de Brandebourg, achevée en 1791, fut longtemps le symbole de la ville divisée. Inspirée des propylées de l'Acropole, elle marque aujourd'hui l'entrée du boulevard Unter den Linden. Imaginez ici le Mur de Berlin: la porte était inaccessible. Depuis la réunification, elle est devenue le lieu des grandes célébrations."
+            case "Reichstag":
+                return "Siège du Bundestag, le Reichstag mêle façade néo‑renaissance et coupole de verre signée Norman Foster. Depuis la terrasse, Berlin s'offre à 360 degrés. À l’intérieur, la rampe en spirale symbolise la transparence démocratique: le peuple surplombe l'hémicycle. Pensez à réserver la visite gratuite."
+            case "Alexanderplatz":
+                return "Alexanderplatz est l'épicentre de l'ex‑Berlin‑Est. La Fernsehturm, tour de télévision de 368 mètres, est visible partout en ville. Autour, hôtels modernistes, horloge universelle et grands magasins retracent l’urbanisme socialiste des années 1960."
+            case "Checkpoint Charlie":
+                return "Ancien point de passage entre secteurs américain et soviétique, Checkpoint Charlie incarne la guerre froide. Les panneaux multilingues ‘Vous quittez le secteur américain’ ont fait le tour du monde. Aujourd’hui, le musée voisin retrace les évasions spectaculaires et l'histoire des frontières berlinoises."
+            case "Museumsinsel":
+                return "L’Île aux Musées regroupe Pergame, Neues, Altes, Bode et Alte Nationalgalerie. Classée à l’UNESCO, elle raconte l'histoire de l'art et des civilisations. Traversez les colonnades, écoutez la Spree, et laissez‑vous guider de Nefertiti au marché d’Ishtar."
+            case "Potsdamer Platz":
+                return "Rasée par la guerre puis coupée par le Mur, Potsdamer Platz fut un gigantesque chantier dans les années 1990. Les architectures de Renzo Piano et Helmut Jahn y dessinent un quartier de spectacles et de bureaux. Au Sony Center, la verrière évoque un chapiteau lumineux."
+            case "Kurfürstendamm":
+                return "Le Ku’damm est l’avenue du shopping berlinois. À proximité, l’Église du Souvenir, laissée en ruine après 1945, rappelle la destruction de la ville. Son clocher fracturé répond au bâtiment moderne aux vitraux bleus: la mémoire au cœur du quotidien."
+            case "Gendarmenmarkt":
+                return "Gendarmenmarkt est sans doute la plus belle place de Berlin, encadrée par le Konzerthaus et les deux cathédrales jumelles, française et allemande. Le soir, l’éclairage souligne l’harmonie classique. Installez‑vous quelques minutes pour écouter les musiciens de rue."
+            case "Tiergarten":
+                return "Poumon vert de Berlin, le Tiergarten était jadis réserve de chasse des Hohenzollern. Aujourd’hui, allées, lacs et pelouses offrent une parenthèse naturelle au centre‑ville. Au sud‑est, le Mémorial de l’Holocauste invite au recueillement."
+            case "East Side Gallery":
+                return "Le long de la Spree, l’East Side Gallery préserve 1,3 km du Mur, recouvert de fresques par 118 artistes en 1990. C’est la galerie d’art à ciel ouvert la plus longue du monde. Les œuvres, régulièrement restaurées, témoignent de l'élan d'espoir de la réunification."
+            default:
+                break
+            }
+        }
+        // Narrations écrites à la main pour Bruxelles
+        if city == .brussels {
+            switch locationName {
+            case "Grand-Place", "Grand Place":
+                return "La Grand‑Place, cœur historique de Bruxelles, associe l’Hôtel de Ville gothique et les Maisons des corporations aux façades baroques. Les dorures scintillent au soleil et, en été, le tapis de fleurs magnifie la perspective. Prenez quelques minutes pour lire les enseignes sculptées."
+            case "Galeries Royales Saint-Hubert", "Galeries Saint-Hubert":
+                return "Inaugurées en 1847, les Galeries Royales Saint‑Hubert furent parmi les premières en Europe. Leur verrière baigne de lumière boutiques, cafés et théâtres. Avancez sous l’arcature pour apprécier la répétition des travées et le raffinement des décors."
+            case "Manneken-Pis":
+                return "Irrévérencieux et facétieux, Manneken‑Pis est devenu l’icône populaire de Bruxelles. Plusieurs légendes entourent cette statuette du XVIIe siècle. Jetez un œil à sa garde‑robe de costumes exposée au musée voisin."
+            case "Mont des Arts":
+                return "Le Mont des Arts offre une composition de jardins en terrasse reliant haute et basse ville. Depuis l’esplanade, la vue aligne beffroi de l’Hôtel de Ville et toits de la vieille ville. Autour, musées majeurs et bibliothèques."
+            case "Cathédrale Saints-Michel-et-Gudule", "Cathédrale de Bruxelles":
+                return "Avec ses deux tours jumelles, la cathédrale Saints‑Michel‑et‑Gudule est un repère gothique de la capitale. À l’intérieur, vitraux, chaire baroque et crypte médiévale composent un parcours riche en œuvres."
+            case "Atomium":
+                return "Symbole de l’Expo 58, l’Atomium représente un cristal de fer agrandi 165 milliards de fois. Montez dans les sphères reliées par des tubes: expositions et vues panoramiques sur Bruxelles et Laeken s’y succèdent."
+            case "Parc du Cinquantenaire", "Cinquantenaire":
+                return "Le parc du Cinquantenaire, créé pour célébrer l’indépendance, s’organise autour d’un arc monumental. Musées de l’Armée et de l’Automobile occupent les ailes. Les pelouses attirent joggeurs et familles dès les beaux jours."
+            case "Place du Sablon", "Sablon":
+                return "Autour des églises du Grand et du Petit Sablon, antiquaires et chocolatiers composent un quartier élégant. Le petit jardin, orné de statues, est un havre de calme à deux pas des musées."
+            default:
+                break
+            }
+        }
+        // Narrations écrites à la main pour Bruges
+        if city == .bruges {
+            switch locationName.lowercased() {
+            case let n where n.contains("mark"):
+                return "Au Markt, la grande place de Bruges, s’élèvent façades à pignons et terrasses animées. C’est le cœur commercial médiéval de la ville. Laissez votre regard filer vers le Beffroi: ses cloches rythmaient jadis la vie des corporations."
+            case let n where n.contains("beffroi") || n.contains("belfort"):
+                return "Le Beffroi de Bruges, haut d’environ 83 mètres, symbolise l’autonomie urbaine. Les 366 marches mènent au carillon: la vue sur les toits et les canaux récompense l’effort. Écoutez les cloches: elles ponctuent encore la journée."
+            case let n where n.contains("burg") || n.contains("saint-sang"):
+                return "Sur la place du Burg, la basilique du Saint‑Sang côtoie l’ancien hôtel de ville gothique. Les styles s’entrelacent: roman, gothique, renaissance. À l’intérieur, une relique vénérée rappelle les processions séculaires."
+            case let n where n.contains("sint-salvator") || n.contains("saint-sauveur"):
+                return "La cathédrale Saint‑Sauveur présente un patchwork d’époques: tour romane, restaurations néo‑gothiques, intérieurs sobres et œuvres précieuses. Une halte qui éclaire le rôle de Bruges comme cité religieuse et marchande."
+            case let n where n.contains("mariastraat") || n.contains("notre-dame"):
+                return "L’église Notre‑Dame abrite la célèbre Madeleine de Michel‑Ange. Sa tour en brique, l’une des plus hautes de Belgique, domine les canaux. Traversez le petit pont: cartes postales assurées sur le Dijver."
+            case let n where n.contains("rozenhoedkaai"):
+                return "Au Rozenhoedkaai, la confluence des canaux offre la vue la plus photographiée de Bruges: pignons, saules et reflets composent une scène immuable. Patientez un instant: la lumière change vite et révèle d’autres couleurs."
+            case let n where n.contains("groeninge"):
+                return "Le musée Groeninge réunit chefs‑d’œuvre des primitifs flamands: Memling, Van Eyck, Van der Weyden. Les détails minutieux, l’or des fonds et la douceur des visages racontent l’essor artistique de la Flandre."
+            case let n where n.contains("jan van eyck"):
+                return "La place Jan van Eyck rappelle le quartier des marchands italiens et hanséates. Les façades d’entrepôts et palais témoignent du grand commerce. Le bronze de Van Eyck veille sur la navigation fluviale d’autrefois."
+            case let n where n.contains("minnewater") || n.contains("beguin"):
+                return "Vers Minnewater et le Béguinage, Bruges se fait contemplative: ponts blancs, cygnes et rangées de maisons modestes. On y saisit la spiritualité douce des béguines et le goût des promenades au fil de l’eau."
+            default:
+                break
+            }
+        }
+        // Narrations écrites à la main pour Pékin (Beijing)
+        if city == .beijing {
+            switch locationName.lowercased() {
+            case let n where n.contains("forbidden") || n.contains("cité interdite") || n.contains("palace museum"):
+                return "Au cœur de Pékin, la Cité interdite fut la résidence des empereurs Ming et Qing. Pavillons, cours et toits vernissés s’enchaînent selon un axe nord‑sud, symbole de l’ordre cosmique. Observez les lions de bronze, les dalles usées par les processions et la rigueur des proportions."
+            case let n where n.contains("tiananmen") || n.contains("tian'anmen"):
+                return "La place Tian'anmen, vaste esplanade civique, s’ouvre face à la porte de la Paix céleste. Ici se côtoient Histoire impériale et Chine contemporaine. Les cérémonies du drapeau rythment l’aube et le crépuscule."
+            case let n where n.contains("temple of heaven") || n.contains("temple du ciel") || n.contains("tiantan"):
+                return "Au Temple du Ciel, l’empereur priait pour de bonnes récoltes. Le Hall des prières pour de Bonnes Moissons, circulaire, repose sur des colonnes en bois sans clous. Les alignements de cyprès et les plateformes de marbre structurent le rite."
+            case let n where n.contains("summer palace") || n.contains("palais d'été"):
+                return "Le Palais d’Été marie collines, lacs et temples. Depuis la Colline de la Longévité, le regard glisse sur le lac Kunming et les longues galeries peintes. C’était la retraite estivale de la cour, un condensé de paysages idéalisés."
+            case let n where n.contains("mutianyu") || n.contains("great wall") || n.contains("grande muraille"):
+                return "À Mutianyu, la Grande Muraille serpente sur les crêtes boisées. Les tours de guet ponctuent la ligne, révélant la logique défensive. Préparez de bonnes chaussures: l’escalier est irrégulier et les perspectives magnifiques."
+            case let n where n.contains("yonghe") || n.contains("lama temple") || n.contains("yonghegong"):
+                return "Le temple des Lamas (Yonghe) est un monastère tibétain aux encens millénaires. Les pavillons abritent statues monumentales et rouleaux de sutras. Avancez lentement: couleurs, parfums et chants composent une ambiance de recueillement."
+            case let n where n.contains("confucius") || n.contains("guozijian"):
+                return "Le temple de Confucius et l’académie impériale (Guozijian) honorent le maître et l’éducation. Stèles, cyprès et pavillons invitent à la réflexion. C’est un contrepoint paisible aux grands axes impériaux."
+            case let n where n.contains("beihai"):
+                return "Le parc Beihai, ancien jardin impérial, mêle lac, île au stupa blanc et kiosques colorés. Louez une barque ou parcourez les sentiers pour des vues changeantes sur les toits de la Cité interdite."
+            case let n where n.contains("jingshan"):
+                return "Depuis le parc Jingshan, la vue embrasse la Cité interdite dans l’axe de Pékin. Cette colline artificielle, formée des terres excavées des douves, servait de barrière au vent du nord selon les principes du feng shui."
+            case let n where n.contains("hutong") || n.contains("nanluoguxiang"):
+                return "Dans les hutongs, ruelles traditionnelles, se devinent siheyuan, maisons à cour carrée. À Nanluoguxiang, cafés et boutiques occupent d’anciennes demeures: un mélange de mémoire et de vie quotidienne."
+            default:
+                break
+            }
+        }
+        // Narrations écrites à la main pour Shanghai
+        if city == .shanghai {
+            switch locationName.lowercased() {
+            case let n where n.contains("bund"):
+                return "Le Bund aligne façades néo‑classiques et art déco sur la rive du Huangpu. Face à vous, le quartier de Lujiazui dresse ses tours futuristes: un dialogue unique entre héritage colonial et mégalopole XXIe siècle. Le soir, les illuminations créent un tableau spectaculaire."
+            case let n where n.contains("people's square") || n.contains("place du peuple"):
+                return "Autour de la Place du Peuple se concentrent musées et théâtres. Les parcs, les allées et les institutions culturelles en font un cœur civique et artistique, à deux pas de Nanjing Road."
+            case let n where n.contains("shanghai museum") || n.contains("musée de shanghai"):
+                return "Le Musée de Shanghai propose un panorama des arts chinois: bronzes, jades, calligraphies, peintures. L’architecture circulaire évoque le ciel sur une base carrée, symbole de la terre."
+            case let n where n.contains("yu garden") || n.contains("yuyuan"):
+                return "Le jardin Yu (Yuyuan) recompose à l’échelle d’un quartier montagnes, pavillons, étangs et rochers. Pont en zigzag, kiosques et murs aux ondulations de dragon composent un paysage intime, idéal au petit matin."
+            case let n where n.contains("nanjing road"):
+                return "Nanjing Road est l’avenue commerçante emblématique: grandes enseignes, néons et foule ininterrompue. Entre deux vitrines, cherchez les bâtiments art déco témoins du Shanghai des années 1930."
+            case let n where n.contains("tianzifang"):
+                return "Tianzifang réinvente des lilong, anciennes ruelles et shikumen, maisons à portails de pierre. Ateliers, boutiques et cafés s’y imbriquent: un Shanghai à échelle humaine, propice à la flânerie."
+            case let n where n.contains("xintiandi"):
+                return "Xintiandi a restauré des ensembles de shikumen en lieux de sortie: terrasses, galeries et restaurants. L’architecture traditionnelle se marie à un urbanisme contemporain très soigné."
+            case let n where n.contains("shanghai tower"):
+                return "La Shanghai Tower culmine à plus de 600 mètres. Son enveloppe torsadée abrite des jardins verticaux et un observatoire vertigineux. La vue embrasse le méandre du Huangpu et les toits du Bund."
+            case let n where n.contains("world financial center") || n.contains("swfc"):
+                return "Le Shanghai World Financial Center, surnommé ‘ouvre‑bouteille’, offre une plateforme suspendue sur Lujiazui. L’ingénierie audacieuse répond aux vents marins par une grande ouverture traversante."
+            case let n where n.contains("aquarium"):
+                return "L’Aquarium océanique de Shanghai présente des tunnels panoramiques et des espèces de tous les océans d’Asie. Une pause ludique, surtout en famille, entre deux ascensions de gratte‑ciels."
+            default:
+                break
+            }
+        }
+        // Narrations écrites à la main pour Xi'an
+        if city == .xian {
+            switch locationName.lowercased() {
+            case let n where n.contains("terracotta") || n.contains("terre cuite"):
+                return "L’armée de terre cuite, découverte en 1974, garde le mausolée de Qin Shi Huangdi. Chaque soldat, moulé à partir d’éléments standardisés puis individualisé, révèle l’ampleur logistique de l’empire unifié. Les halls exposent fantassins, archers et officiers."
+            case let n where n.contains("city wall") || n.contains("muraille"):
+                return "La muraille de Xi’an, restaurée sous les Ming, forme un rectangle de plus de 13 km. Bastions, portes et pavillons délimitent l’ancienne capitale. Louez un vélo pour parcourir les remparts et saisir la trame urbaine ancienne."
+            case let n where n.contains("muslim quarter") || n.contains("quartier musulman"):
+                return "Le quartier musulman, autour de Beiyuanmen, mêle échoppes et cuisine de rue. Brochettes, pains ronds et nouilles ‘biang biang’ parfument les ruelles. Un héritage des caravanes de la route de la soie."
+            case let n where n.contains("great mosque") || n.contains("mosquée"):
+                return "La grande mosquée de Xi’an combine cour chinoise et culte islamique. Portiques, pavillons et stèles calligraphiées composent une progression vers la salle de prière. Un syncrétisme architectural unique en Chine."
+            case let n where n.contains("bell tower") || n.contains("cloche"):
+                return "La tour de la Cloche marquait jadis le temps de la ville. Sa charpente sur podium de pierre domine l’axe est‑ouest. Le soir, l’éclairage souligne la géométrie des toitures vernissées."
+            case let n where n.contains("drum tower") || n.contains("tambour"):
+                return "Face à la tour de la Cloche, la tour du Tambour rythmait cérémonies et alertes. Montez pour une vue plongeante sur le quartier musulman et la trame orthogonale des rues."
+            case let n where n.contains("wild goose pagoda") || n.contains("oie sauvage"):
+                return "La pagode de la Grande Oie sauvage, liée au moine Xuanzang, fut un centre de traduction des textes bouddhiques. Escaliers étroits, briques anciennes et places animées rappellent la vitalité du bouddhisme des Tang."
+            case let n where n.contains("shaanxi history museum") || n.contains("musée du shaanxi"):
+                return "Le Musée d’histoire du Shaanxi déroule bronzes, céramiques et fresques des tombes des Tang. On y mesure la richesse de Chang’an, capitale cosmopolite de la route de la soie."
+            case let n where n.contains("huaqing"):
+                return "Huaqing Palace, au pied du mont Li, évoque thermes impériaux et légendes d’amour. Pavillons et bassins alignent leur symétrie devant les collines."
+            case let n where n.contains("banpo"):
+                return "Le site de Banpo présente un village néolithique reconstitué: poteries, fosses et maisons semi‑enterrées. Un saut de plus de 6000 ans dans le passé de la vallée de la Wei."
+            default:
+                break
+            }
+        }
+        // Narrations écrites à la main pour Chengdu
+        if city == .chengdu {
+            switch locationName.lowercased() {
+            case let n where n.contains("panda"):
+                return "À la base de recherche des pandas géants, privilégiez une visite matinale: c’est l’heure des repas et de l’activité. Les enclos vastes et les programmes de conservation expliquent chaque étape, de la nurserie aux adultes."
+            case let n where n.contains("wuhou"):
+                return "Le temple Wuhou honore Zhuge Liang, stratège des Trois Royaumes. Jardins, stèles et pavillons forment un parcours ombragé qui raconte l’éthique confucéenne et la mémoire des héros."
+            case let n where n.contains("kuanzhai"):
+                return "Les ruelles Kuanzhai (larges et étroites) réinventent l’urbanisme traditionnel du Sichuan: maisons à cour, thés, snacks épicés et opéras du Sichuan se côtoient."
+            case let n where n.contains("du fu"):
+                return "La chaumière de Du Fu évoque la retraite du grand poète Tang: pavillons, bambous et pièces reconstituées. La poésie, affichée en caractères, se mêle au bruissement des feuilles."
+            case let n where n.contains("jinsha"):
+                return "Le musée du site de Jinsha a révélé un centre Shu de l’âge du bronze: masques dorés, ivoires et jades. La scénographie relie fouilles et objets, un jalon de l’archéologie chinoise récente."
+            case let n where n.contains("leshan"):
+                return "Le grand Bouddha de Leshan, taillé dans la falaise au VIIIe siècle, domine la confluence des rivières. Les escaliers étroits et la végétation luxuriante composent un parcours impressionnant."
+            case let n where n.contains("emei"):
+                return "Le mont Emei, haut lieu du bouddhisme, alterne temples, forêts et panoramas. Selon la saison, brumes et ‘mers de nuages’ créent une atmosphère mystique."
+            default:
+                break
+            }
+        }
+        // Narrations écrites à la main pour Séoul
+        if city == .seoul {
+            switch locationName.lowercased() {
+            case let n where n.contains("gyeongbok"):
+                return "Le palais Gyeongbokgung, reconstruit après les destructions, aligne portes, cours et pavillons dans une rigueur confucéenne. Au nord, la montagne Bugaksan ferme la perspective; au sud, la place Gwanghwamun anime l’axe."
+            case let n where n.contains("changdeok"):
+                return "À Changdeokgung, le ‘jardin secret’ (Huwon) déroule étangs, kiosques et érables. C’est le palais le plus harmonieux, conçu pour épouser le relief. Réservez les visites guidées pour accéder aux sections préservées."
+            case let n where n.contains("jongmyo"):
+                return "Le sanctuaire royal Jongmyo conserve les tablettes ancestrales de la dynastie Joseon. Les cérémonies et musiques rituelles (Jongmyo Jerye) y perpétuent un patrimoine immatériel exceptionnel."
+            case let n where n.contains("bukchon"):
+                return "À Bukchon, ruelles et hanok dévoilent la Séoul traditionnelle entre deux palais. Respectez la quiétude des habitants et cherchez les belvédères pour des vues sur les toits de tuiles."
+            case let n where n.contains("insadong"):
+                return "Insadong concentre galeries, calligraphies et salons de thé. Entre enseignes en hangeul et ruelles, on touche l’âme culturelle de Séoul."
+            case let n where n.contains("myeong"):
+                return "Myeong‑dong, temple du shopping, mêle cosmétiques, street‑food et cathédrale gothique. Le soir, néons et stands créent une effervescence typiquement coréenne."
+            case let n where n.contains("namsan") || n.contains("n seoul"):
+                return "Au Namsan, les sentiers mènent à la N Seoul Tower: panorama circulaire sur la ville et les montagnes. Les remparts reconstitués évoquent la topographie défensive."
+            default:
+                break
+            }
+        }
+        // Narrations écrites à la main pour Busan
+        if city == .busan {
+            switch locationName.lowercased() {
+            case let n where n.contains("jagalchi"):
+                return "Le marché aux poissons de Jagalchi incarne l’identité maritime de Busan: halles, étals et restaurants servent poissons et fruits de mer ultra‑frais. L’odeur d’iode et le tumulte des ventes aux enchères en font une scène vivante."
+            case let n where n.contains("gamcheon"):
+                return "Le village culturel de Gamcheon, aux maisons colorées en terrasses, est un labyrinthe d’escaliers et de fresques. Né d’un projet communautaire, il offre des points de vue superbes sur le port."
+            case let n where n.contains("gwang") || n.contains("gwangan"):
+                return "La plage de Gwangalli s’ouvre sur le pont Gwangan: la nuit, ses illuminations répondent aux tours du front de mer."
+            case let n where n.contains("haeundae"):
+                return "Haeundae est la grande plage de Busan: sable clair, urbanisme dense et festivals. L’aquarium voisin et les cafés en front de mer complètent l’ambiance balnéaire."
+            case let n where n.contains("haedong"):
+                return "Le temple Haedong Yonggungsa, posé au bord des rochers, marie culte bouddhiste et horizon marin. Un des rares temples côtiers de Corée."
+            default:
+                break
+            }
+        }
+        // Narrations écrites à la main pour Incheon
+        if city == .incheon {
+            switch locationName.lowercased() {
+            case let n where n.contains("chinatown"):
+                return "Le Chinatown d’Incheon témoigne des échanges sino‑coréens: arches, restaurants et musées de l’‘Open Port’ retracent l’histoire moderne du port."
+            case let n where n.contains("songdo"):
+                return "À Songdo, ‘smart city’ sur terrain gagné, gratte‑ciel et parcs se connectent par passerelles et canaux. Le Central Park est idéal au coucher du soleil."
+            case let n where n.contains("wolmi"):
+                return "Wolmido, île récréative, réunit promenades littorales, manèges et vues sur les terminaux portuaires."
+            default:
+                break
+            }
+        }
+        // Narrations écrites à la main pour Daejeon
+        if city == .daejeon {
+            switch locationName.lowercased() {
+            case let n where n.contains("expo"):
+                return "Le parc Expo de Daejeon conserve pavillons, ponts et œuvres d’art de l’exposition de 1993: un paysage urbain singulier au bord de la rivière Gapcheon."
+            case let n where n.contains("hanbat"):
+                return "L’arboretum Hanbat déroule serres, collections botaniques et allées thématiques, parenthèse verte au cœur de la ville scientifique."
+            default:
+                break
+            }
+        }
+        // Audios Espagne
+        if city == .madrid {
+            switch locationName.lowercased() {
+            case let n where n.contains("plaza mayor"):
+                return "La Plaza Mayor, cœur cérémoniel de Madrid des Habsbourg, aligne arcades et façades uniformes. Au fil des siècles, marchés, corridas et célébrations s’y sont succédé."
+            case let n where n.contains("prado"):
+                return "Le musée du Prado rassemble chefs‑d’œuvre de Velázquez, Goya et Titien. Prévoyez un parcours court: salles des Ménines, des Noires et des maîtres italiens."
+            case let n where n.contains("retiro"):
+                return "Le parc du Retiro, ancien jardin royal, offre bassins, roseraie et palais de verre. Une pause verte idéale après les musées."
+            default: break
+            }
+        }
+        if city == .barcelona {
+            switch locationName.lowercased() {
+            case let n where n.contains("rambla"):
+                return "La Rambla déroule platanes, kiosques et théâtres du cœur de Barcelone jusqu’au port. Attention aux heures d’affluence: préférez le matin pour les ambiances locales."
+            case let n where n.contains("gràcia") || n.contains("gracia"):
+                return "Sur le Passeig de Gràcia, le modernisme catalan s’exprime: Casa Batlló et La Pedrera de Gaudí mêlent pierre ondulante et fer forgé."
+            case let n where n.contains("güell") || n.contains("sagrada"):
+                return "Entre la Sagrada Família et le Parc Güell, Gaudí a imaginé une ville organique: colonnes arborescentes, mosaïques et perspectives colorées."
+            default: break
+            }
+        }
+        if city == .valencia {
+            switch locationName.lowercased() {
+            case let n where n.contains("lonja"):
+                return "La Lonja de la Seda, gothique civil, rappelle la puissance marchande de Valence. Les colonnes torsadées de la salle du Consulat évoquent les palmeraies."
+            case let n where n.contains("cité des arts") || n.contains("ciudad de las artes"):
+                return "La Cité des Arts et des Sciences de Calatrava associe musées, opéra et océanographique dans un paysage de béton blanc et d’eau."
+            default: break
+            }
+        }
+        if city == .seville {
+            switch locationName.lowercased() {
+            case let n where n.contains("alcazar"):
+                return "L’Alcazar de Séville mêle patios mudéjars, jardins d’orangers et salons royaux. Un chef‑d’œuvre vivant, encore résidence du roi en Andalousie."
+            case let n where n.contains("plaza de espa"):
+                return "La Plaza de España, pavillons et canaux, exalte les provinces espagnoles dans une architecture néo‑régionaliste."
+            default: break
+            }
+        }
+        if city == .malaga {
+            switch locationName.lowercased() {
+            case let n where n.contains("alcazaba"):
+                return "L’Alcazaba domine la baie: remparts, jardins et arcades témoignent de l’Andalousie musulmane."
+            case let n where n.contains("picasso"):
+                return "Le musée Picasso retrace la carrière du natif de Malaga: céramiques, portraits et périodes variées."
+            default: break
+            }
+        }
+        // Narrations écrites à la main pour Anvers
+        if city == .antwerp {
+            switch locationName.lowercased() {
+            case let n where n.contains("grote markt"):
+                return "La Grote Markt, avec ses maisons de corporations et la fontaine de Brabo, est le théâtre de la puissance marchande anversoise. Les façades à pignons racontent la richesse des guildes à l’époque où le port dominait l’Europe."
+            case let n where n.contains("kathedraal") || n.contains("cathédrale") || n.contains("notre-dame"):
+                return "La cathédrale Notre‑Dame d’Anvers, chef‑d’œuvre gothique, abrite plusieurs toiles de Rubens. Sa flèche élancée guide le regard au‑dessus du tissu urbain. À l’intérieur, lumière et peintures baroques dialoguent avec la pierre médiévale."
+            case let n where n.contains("meir"):
+                return "La Meir, grande artère commerçante, est bordée d’hôtels particuliers et de façades éclectiques. Derrière ces vitrines, se devine l’essor bourgeois du XIXe siècle. Continuez jusqu’à la maison de Rubens, à deux pas."
+            case let n where n.contains("rubenshuis") || n.contains("rubens"):
+                return "La Rubenshuis, demeure‑atelier du peintre, dévoile jardins, galeries et salles de réception. On y perçoit l’influence italienne et la place d’Anvers dans le réseau artistique européen."
+            case let n where n.contains("mas") || n.contains("museum aan de stroom"):
+                return "Le MAS, posé comme un empilement de blocs de pierre et de verre, retrace l’histoire portuaire et mondiale d’Anvers. Montez aux belvédères pour un panorama à 360° sur l’Escaut et les docks."
+            case let n where n.contains("groenplaats"):
+                return "La Groenplaats, dominée par la statue de Rubens, relie cathédrale et quartiers commerçants. Ses terrasses illustrent l’art de vivre anversois, entre patrimoine et modernité."
+            case let n where n.contains("zoo"):
+                return "Le ZOO d’Anvers, l’un des plus anciens du monde, est célèbre pour son architecture Belle Époque et ses programmes de conservation. En lisière de la gare centrale, c’est un jardin scientifique au cœur de la ville."
+            case let n where n.contains("haven") || n.contains("port"):
+                return "Le port d’Anvers, deuxième d’Europe, a façonné la ville. Les musées, entrepôts réhabilités et passerelles racontent la mondialisation d’hier et d’aujourd’hui."
+            default:
+                break
+            }
+        }
+        // Narrations écrites à la main pour Francfort
+        if city == .frankfurt {
+            switch locationName {
+            case "Römerberg", "Römer":
+                return "Au cœur de l’Altstadt, le Römerberg est bordé de maisons à colombages reconstruites avec soin. La façade du Römer, l’hôtel de ville médiéval, domine la place. Ici, fêtes et marchés rythment la vie depuis des siècles, avec en toile de fond la skyline contemporaine."
+            case "Main Tower":
+                return "Main Tower offre une terrasse d’observation au sommet de ses 200 mètres. Le panorama embrasse le Main, les musées de la rive sud et la cathédrale. C’est le meilleur point pour comprendre le dialogue entre ville historique et capitalisme financier de Francfort."
+            case "Frankfurter Dom", "Cathédrale Saint-Barthélemy":
+                return "La cathédrale Saint‑Barthélemy, de brique rouge, fut le lieu du couronnement des empereurs du Saint‑Empire. À l’intérieur, chapelles gothiques et œuvres baroques témoignent de la continuité des styles. Grimpez à la tour pour une vue serrée sur l’Altstadt."
+            case "Eiserner Steg":
+                return "La passerelle piétonne Eiserner Steg relie les deux rives du Main depuis 1869. Sa structure métallique est couverte de cadenas d’amoureux. En la traversant, on découvre l’alignement des musées et la silhouette des tours de verre."
+            case "Goethe House", "Goethe-Haus":
+                return "La maison natale de Goethe reconstitue le cadre familial du jeune écrivain. Entre salons boisés, bibliothèque et atelier, on saisit l’ambiance bourgeoise du XVIIIe siècle qui a formé l’auteur de Faust."
+            case "Palmengarten":
+                return "Le Palmengarten est un vaste jardin botanique aux serres spectaculaires. Des tropiques aux déserts, la scénographie végétale offre une pause nature. L’étang central et les pelouses en font une halte idéale par beau temps."
+            case "Städel Museum":
+                return "Fondé en 1815, le Städel présente une collection majeure de l’art européen, de la Renaissance à l’art contemporain. La galerie souterraine baignée de lumière naturelle abrite les expositions temporaires."
+            default:
+                break
+            }
+        }
+        // Narrations écrites à la main pour Cologne
+        if city == .cologne {
+            switch locationName {
+            case "Kölner Dom", "Cathédrale de Cologne":
+                return "La cathédrale de Cologne, chef‑d’œuvre gothique, a vu son chantier se poursuivre sur six siècles. Ses deux flèches dominent le Rhin et la vieille ville. À l’intérieur, les vitraux, le reliquaire des Rois mages et la nef vertigineuse impressionnent durablement."
+            case "Hohenzollernbrücke":
+                return "Le pont Hohenzollern, couvert de cadenas, offre l’une des vues les plus photographiées: le Dom encadré par les arches métalliques. De nuit, l’éclairage souligne la structure et le reflet sur le fleuve."
+            case "Museum Ludwig":
+                return "Le Museum Ludwig rassemble une collection de premier plan d’art moderne et contemporain: Picasso, Pop Art, photographie. Son architecture modulable crée des perspectives changeantes sur les œuvres."
+            case "Alter Markt", "Heumarkt":
+                return "Alter Markt et Heumarkt forment le cœur animé de la vieille ville. Terrasses, maisons colorées et ruelles pavées y composent un décor convivial. C’est aussi un des foyers du carnaval de Cologne."
+            case "Rheinpark":
+                return "Sur la rive droite, le Rheinpark déroule pelouses et jardins jusqu’au téléphérique. C’est un spot de détente face à la skyline, idéal au coucher du soleil quand la pierre du Dom rosit."
+            case "Roman-Germanic Museum", "Römisch-Germanisches Museum":
+                return "Le musée romano‑germanique conserve mosaïques, verreries et objets antiques découverts sur place. La grande mosaïque de Dionysos est un incontournable."
+            default:
+                break
+            }
+        }
+        // Narrations écrites à la main pour Munich
+        if city == .munich {
+            switch locationName {
+            case "Marienplatz":
+                return "Bienvenue à Marienplatz, la place centrale de Munich depuis le Moyen Âge. Le carillon du Neues Rathaus résonne deux fois par jour, mettant en scène des épisodes de l'histoire bavaroise. Prenez le temps d'observer la colonne de Marie au centre, puis levez les yeux vers la façade néo-gothique du nouvel hôtel de ville: ses pinacles et statues racontent la fierté municipale."
+            case "Neues Rathaus", "Nouvel Hôtel de Ville":
+                return "Le Neues Rathaus, inauguré en 1909, affiche une architecture néo-gothique spectaculaire. Sa tour abrite le célèbre carillon: 43 cloches et 32 figures animées rejouent la fête du Schäffler et le tournoi de 1568. Montez au belvédère pour un panorama sur les toits rouges, la Frauenkirche et, par temps clair, les Alpes."
+            case "Frauenkirche", "Cathédrale Notre-Dame de Munich", "Dom zu Unserer Lieben Frau":
+                return "La Frauenkirche, reconnaissable à ses deux tours coiffées de dômes en oignon, est le symbole de Munich. Édifiée au XVe siècle en brique, elle illustre le gothique tardif d'Allemagne du Sud. À l'intérieur, remarquez la nef ample et la fameuse 'Empreinte du Diable' au sol, une légende qui intrigue les visiteurs depuis des siècles."
+            case "Viktualienmarkt":
+                return "Le Viktualienmarkt est le grand marché quotidien de Munich. Étals de fruits, épices, fromages, stands de bière et biergarten s’y côtoient. C’est l’endroit idéal pour goûter une collation locale: bretzel, Obatzda ou Weißwurst. Observez le mât décoré, le Maibaum, véritable totem des corporations."
+            case "Residenz", "Munich Residenz":
+                return "Ancien palais des ducs puis rois de Bavière, la Residenz déploie un ensemble de cours, galeries et cabinets d’art. L’Antiquarium, longue salle voûtée du XVIe siècle, est un chef‑d’œuvre de la Renaissance. Les appartements d’apparat témoignent du raffinement baroque et rococo de la cour bavaroise."
+            case "Englischer Garten":
+                return "Plus grand que Central Park, l’Englischer Garten offre prairies, rivières et jardins paysagers à deux pas du centre. Au bord de l’Eisbach, observez les surfeurs défier la vague artificielle. Rejoignez une brasserie en plein air, comme la Chinesischer Turm, pour une pause typiquement munichoise."
+            case "Schloss Nymphenburg", "Palais de Nymphenburg":
+                return "Résidence d’été des Wittelsbach, Nymphenburg déploie un palais baroque entouré de canaux et de pavillons. À l’intérieur, la Galerie des Beautés commandée par le roi Louis Ier impressionne. Promenez‑vous dans le parc: temples, fabriques et perspectives à la française alternent avec des bosquets romantiques."
+            case "Deutsches Museum":
+                return "Consacré aux sciences et aux techniques, le Deutsches Museum est l’un des plus grands musées de ce type au monde. Des avions aux instruments scientifiques, les expositions interactives racontent l’ingéniosité humaine. Prévoyez du temps: chaque étage réserve des expériences à manipuler."
+            case "Asamkirche", "Église Asam":
+                return "L’Asamkirche, petit bijou baroque du XVIIIe siècle, fut construite par les frères Asam comme église privée. L’intérieur, foisonnant de stucs, dorures et fresques, crée une dramaturgie lumineuse spectaculaire dans un espace étonnamment réduit. Avancez lentement pour apprécier les détails."
+            case "Odeonsplatz":
+                return "À Odeonsplatz, l’architecture classique encadre la vie munichoise: Feldherrnhalle, église des Théatins et Résidence se répondent. Cette place fut le théâtre d’événements historiques marquants au XXe siècle. Aujourd’hui, elle ouvre vers la Ludwigstraße et ses façades à l’italienne."
+            case "Hofbräuhaus":
+                return "La Hofbräuhaus, brasserie mythique fondée au XVIe siècle, incarne la convivialité bavaroise. Bancs de bois, musique traditionnelle, chopes gravées: l’ambiance y est unique. Le plafond peint évoque fêtes et récoltes, tandis que les serveurs en costume animent la salle."
+            case "Pinakothek der Moderne", "Alte Pinakothek", "Neue Pinakothek":
+                return "Le quartier des Pinakotheken réunit trois musées complémentaires: maîtres anciens, XIXe siècle et art/design moderne. Les espaces lumineux mettent en valeur toiles, sculptures et objets. Une pause idéale pour saisir l’ampleur du patrimoine artistique munichois."
+            case "BMW Welt", "BMW Museum":
+                return "Au nord de la ville, BMW Welt et le musée attenant célèbrent l’automobile et le design. Architecture futuriste, expositions immersives, concept-cars et motos racontent l’innovation bavaroise. Depuis l’esplanade, on aperçoit le stade olympique et la tour en 'quatre cylindres'."
+            default:
+                break
+            }
+        }
+        // Narrations écrites à la main pour Hambourg
+        if city == .hamburg {
+            switch locationName {
+            case "Rathaus", "Rathausmarkt":
+                return "Le Rathaus de Hambourg, inauguré en 1897, symbolise la puissance commerçante de la cité hanséatique. Sa façade néo‑renaissance regorge d’emblèmes maritimes. Traversez la cour intérieure pour admirer les galeries, puis longez l’Alsterfleet vers les arcades blanches du Jungfernstieg."
+            case "Speicherstadt":
+                return "La Speicherstadt, plus grand complexe d’entrepôts en brique au monde, fut construite à la fin du XIXe siècle pour le commerce du café, du cacao ou des tapis. Ses canaux et ponts forment un damier unique. Au crépuscule, l’éclairage révèle la dentelle des pignons néogothiques."
+            case "Elbphilharmonie":
+                return "Érigée sur un ancien entrepôt, l’Elbphilharmonie marie socle en brique et couronnements de verre aux courbes marines. Sa Plaza publique offre une vue exceptionnelle sur le port. À l’intérieur, la salle de concert, calebasse blanche suspendue, garantit une acoustique enveloppante."
+            case "Jungfernstieg":
+                return "Le Jungfernstieg borde l’Inner Alster. Boutiques, arcades et pontons s’alignent face à l’eau. C’est la promenade élégante de Hambourg depuis le XIXe siècle. Empruntez un bateau pour voir la ville se refléter dans le bassin, puis revenez par les passages commerciaux."
+            case "Reeperbahn":
+                return "La Reeperbahn, artère du quartier de St. Pauli, mêle salles de concert, théâtres et clubs. Jadis rue des cordiers, elle est devenue l’un des hauts lieux nocturnes d’Europe. En journée, street art et petites scènes témoignent d’une culture alternative foisonnante."
+            case "Planten un Blomen":
+                return "Planten un Blomen est un vaste parc en plein centre: jardins thématiques, serres et spectacles aquatiques l’été. Les pelouses invitent à la pause, tandis que le jardin japonais propose une parenthèse zen. C’est le poumon vert entre centre et quartiers résidentiels."
+            case "St. Michaelis Kirche", "Michel":
+                return "Saint‑Michel, surnommée le ‘Michel’, est l’église baroque emblématique de Hambourg. Montez au clocher pour embrasser la ville et l’Elbe. À l’intérieur, nef lumineuse, orgues imposants et tribunes blanches composent un décor solennel et clair."
+            case "HafenCity":
+                return "HafenCity illustre la reconversion du port: architectures contemporaines, quais redessinés, passerelles et parcs. Les anciens docks dialoguent avec des bureaux et logements durables. La promenade mène naturellement vers l’Elbphilharmonie."
+            case "Alster", "Binnenalster", "Außenalster":
+                return "Les bassins de l’Alster sont le miroir de Hambourg. Joggeurs, rameurs et voiliers cohabitent sur les berges arborées. Circulez le long des rives pour découvrir villas, ambassades et cafés, le tout à deux pas du cœur marchand de la ville."
+            case "Miniatur Wunderland":
+                return "Au cœur de la Speicherstadt, Miniatur Wunderland expose le plus grand réseau ferroviaire miniature du monde. Paysages, villes et aéroports animés fascinent petits et grands. La précision des détails et les ‘épisodes jour/nuit’ en font une attraction unique."
+            default:
+                break
+            }
+        }
+        // Par défaut, un texte court générique
+        return "Bienvenue à \(locationName), un lieu emblématique de \(city.displayName). Prenez quelques minutes pour en apprécier l’architecture et l’histoire avant la prochaine étape."
+    }
+
+    // MARK: - Enrichir les tours avec des images via Wikimedia puis Pixabay
+    private func enrichToursWithImages() {
+        for index in tours.indices {
+            let tour = tours[index]
+            let query = buildImageQuery(for: tour)
+            // 1) Wikimedia Commons (images de lieux)
+            WikimediaImageService.shared.fetchImageURL(for: query) { [weak self] wmURL in
+                guard let self = self else { return }
+                if let wmURL = wmURL {
+                    self.applyImageURL(wmURL, at: index)
+                } else {
+                    // 2) Pixabay fallback
+                    self.imageProvider.fetchImageURL(for: query) { [weak self] pxURL in
+                        guard let self = self, let pxURL = pxURL else { return }
+                        self.applyImageURL(pxURL, at: index)
+                    }
+                }
+            }
+        }
+    }
+
+    private func applyImageURL(_ url: String, at index: Int) {
+        DispatchQueue.main.async {
+            guard index < self.tours.count else { return }
+            let old = self.tours[index]
+
+            // Éviter les doublons: si l'URL a déjà été utilisée, basculer sur une image fallback unique
+            var finalURL = url
+            if url.isEmpty || self.usedTourImageURLs.contains(url) {
+                finalURL = self.getFallbackImageURL(for: old.title, in: old.city)
+            }
+            self.usedTourImageURLs.insert(finalURL)
+
+            let updated = GuidedTour(
+                id: old.id,
+                title: old.title,
+                city: old.city,
+                description: old.description,
+                duration: old.duration,
+                difficulty: old.difficulty,
+                stops: old.stops,
+                imageURL: finalURL,
+                rating: old.rating,
+                price: old.price,
+                startLocation: old.startLocation,
+                startAddress: old.startAddress,
+                optimizedStops: old.optimizedStops,
+                totalDistance: old.totalDistance,
+                estimatedTravelTime: old.estimatedTravelTime
+            )
+            self.tours[index] = updated
+        }
+    }
+
+    // Génère une URL fallback unique et libre de droit (Picsum) basée sur la ville + titre
+    private func getFallbackImageURL(for title: String, in city: City) -> String {
+        let seedBase = "\(city.rawValue)_\(title)"
+        let seed = seedBase.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "tour"
+        // Utiliser 1280x720 (16:9) pour respecter strictement le ratio des cartes
+        return "https://picsum.photos/seed/\(seed)/1280/720"
+    }
+
+    private func buildImageQuery(for tour: GuidedTour) -> String {
+        // Simplification demandée: images de ville aléatoires (monuments/ville), pas besoin d'être ultra précises
+        let cityName = tour.city.displayName
+        let keywords = ["monuments", "ville", "landmarks", "skyline", "centre historique"].shuffled()
+        return "\(cityName) \(keywords.first ?? "monuments")"
+    }
+    // MARK: - Image représentative libre de droit pour chaque tour (CC0 / libres d'utilisation)
+    private func getTourImageURL(for title: String, in city: City) -> String {
+        let lowerTitle = title.lowercased()
+        // Paris: thèmes différents
+        if city == .paris {
+            if lowerTitle.contains("historique") || lowerTitle.contains("romantique") {
+                // Tour Eiffel – Pixabay CC0
+                return "https://cdn.pixabay.com/photo/2015/03/26/10/03/eiffel-tower-690293_1280.jpg"
+            } else if lowerTitle.contains("art") || lowerTitle.contains("culture") {
+                // Louvre – Pixabay CC0
+                return "https://cdn.pixabay.com/photo/2017/09/07/08/57/louvre-2721453_1280.jpg"
+            } else if lowerTitle.contains("montmartre") || lowerTitle.contains("artiste") || lowerTitle.contains("sacré") {
+                // Sacré-Cœur – Pixabay CC0
+                return "https://cdn.pixabay.com/photo/2015/04/16/16/25/basilica-725935_1280.jpg"
+            }
+            // Par défaut Paris
+            return "https://cdn.pixabay.com/photo/2015/03/26/10/03/eiffel-tower-690293_1280.jpg"
+        }
+
+        // Autres villes: image emblématique CC0 (Pixabay)
+        switch city {
+        case .lyon:
+            return "https://cdn.pixabay.com/photo/2016/07/29/09/24/lyon-1558789_1280.jpg"
+        case .marseille:
+            return "https://cdn.pixabay.com/photo/2017/09/09/10/19/marseille-2736410_1280.jpg"
+        case .nice:
+            return "https://cdn.pixabay.com/photo/2017/08/04/12/35/nice-2571785_1280.jpg"
+        case .bordeaux:
+            return "https://cdn.pixabay.com/photo/2017/03/28/22/09/bordeaux-2181727_1280.jpg"
+        case .strasbourg:
+            return "https://cdn.pixabay.com/photo/2016/11/14/04/45/strasbourg-1828743_1280.jpg"
+        case .brussels:
+            return "https://cdn.pixabay.com/photo/2016/12/15/22/39/brussels-1910477_1280.jpg"
+        case .luxembourg:
+            return "https://cdn.pixabay.com/photo/2017/06/17/07/33/luxembourg-2417133_1280.jpg"
+        default:
+            return getCityImageURL(for: city)
+        }
+    }
     // MARK: - Fonctions utilitaires pour adresses réelles
     private func getRealAddress(for city: City, index: Int) -> String {
         switch city {
@@ -565,16 +3990,16 @@ class GuidedToursViewModel: ObservableObject {
         // LUXEMBOURG
         case .luxembourg:
             let addresses = [
-                "10 Montée de Clausen, 1343 Luxembourg", // Casemates du Bock
-                "17 Rue du Marché-aux-Herbes, 1728 Luxembourg", // Palais Grand-Ducal
-                "Place Guillaume II, 1136 Luxembourg", // Place Guillaume II
-                "Rue Notre Dame, 2240 Luxembourg", // Cathédrale Notre-Dame
-                "Parc Municipal, 2230 Luxembourg", // Parc Municipal
-                "3 Park Dräi Eechelen, 1499 Luxembourg", // Musée d'Art Moderne Grand-Duc Jean
-                "Pont Adolphe, 1116 Luxembourg", // Pont Adolphe
-                "Place de la Gare, 1616 Luxembourg", // Gare de Luxembourg
-                "Place d'Armes, 1136 Luxembourg", // Place d'Armes
-                "14 Rue du Saint-Esprit, 1475 Luxembourg" // Musée d'Histoire de la Ville
+                "Casemates du Bock, 10 Montée de Clausen, 1343 Luxembourg",
+                "Palais grand-ducal, 17 Rue du Marché-aux-Herbes, 1728 Luxembourg",
+                "Cathédrale Notre-Dame de Luxembourg, Rue Notre Dame, 2240 Luxembourg",
+                "Place Guillaume II (Knuedler), 1136 Luxembourg",
+                "Musée Dräi Eechelen, 5 Park Dräi Eechelen, 1499 Luxembourg",
+                "Pont Adolphe, Avenue de la Liberté, 1930 Luxembourg",
+                "Musée national d'histoire et d'art (MNHA), Marché-aux-Poissons, 2345 Luxembourg",
+                "Place d'Armes, 1136 Luxembourg",
+                "Gëlle Fra – Monument du Souvenir, Place de la Constitution, 2450 Luxembourg",
+                "Grund – Quartier historique, Rue Munster, 2160 Luxembourg"
             ]
             return addresses[index % addresses.count]
 
@@ -824,16 +4249,16 @@ class GuidedToursViewModel: ObservableObject {
             return addresses[index % addresses.count]
         case .antwerp:
             let addresses = [
-                "Grote Markt, 2000 Antwerpen, Belgium", // Grote Markt - Place principale
-                "Groenplaats 21, 2000 Antwerpen, Belgium", // Cathédrale Notre-Dame - Cathédrale gothique
-                "Steenplein, 2000 Antwerpen, Belgium", // Place Steen - Place historique
-                "Vrijdagmarkt 22-23, 2000 Antwerpen, Belgium", // Musée Plantin-Moretus - Musée de l'imprimerie
-                "Meir 1, 2000 Antwerpen, Belgium", // Place Meir - Rue commerçante
-                "Leopold de Waelplaats 1-2, 2000 Antwerpen, Belgium", // Musée Royal des Beaux-Arts - Musée d'art
-                "Wapper 9-11, 2000 Antwerpen, Belgium", // Maison de Rubens - Musée de l'artiste
-                "Groenplaats, 2000 Antwerpen, Belgium", // Place du Marché aux Herbes - Place centrale
-                "Koningin Astridplein 20-26, 2018 Antwerpen, Belgium", // Zoo d'Anvers - Parc zoologique
-                "Port d'Anvers, 2000 Antwerpen, Belgium" // Port d'Anvers - Port maritime
+                "Grote Markt, 2000 Antwerpen, Belgium", // Grote Markt – Grand-Place d'Anvers
+                "Groenplaats 21, 2000 Antwerpen, Belgium", // Cathédrale Notre-Dame d'Anvers
+                "Steenplein 1, 2000 Antwerpen, Belgium", // Het Steen – Fort médiéval
+                "Vrijdagmarkt 22-23, 2000 Antwerpen, Belgium", // Musée Plantin-Moretus (UNESCO)
+                "Meir, 2000 Antwerpen, Belgium", // Meir – Artère commerçante et hôtels particuliers
+                "Leopold de Waelplaats 1, 2000 Antwerpen, Belgium", // KMSKA – Musée Royal des Beaux-Arts
+                "Wapper 9-11, 2000 Antwerpen, Belgium", // Rubenshuis – Maison de Rubens
+                "Hanzestedenplaats 1, 2000 Antwerpen, Belgium", // MAS – Museum aan de Stroom
+                "Koningin Astridplein 26, 2018 Antwerpen, Belgium", // ZOO Antwerpen
+                "Tavernierkaai, 2000 Antwerpen, Belgium" // Quai de l'Escaut – Port d'Anvers
             ]
             return addresses[index % addresses.count]
         case .ghent:
@@ -880,16 +4305,16 @@ class GuidedToursViewModel: ObservableObject {
             return addresses[index % addresses.count]
         case .bruges:
             let addresses = [
-                "Markt, 8000 Brugge, Belgium", // Grand Place - Place principale
-                "Markt, 8000 Brugge, Belgium", // Beffroi de Bruges - Tour médiévale
-                "Burg, 8000 Brugge, Belgium", // Basilique du Saint-Sang - Basilique
-                "Sint-Salvatorskathedraal, 8000 Brugge, Belgium", // Cathédrale Saint-Sauveur - Cathédrale
-                "Burg, 8000 Brugge, Belgium", // Place du Bourg - Place historique
-                "Mariastraat, 8000 Brugge, Belgium", // Église Notre-Dame - Église gothique
-                "Rozenhoedkaai, 8000 Brugge, Belgium", // Quai du Rosaire - Quai pittoresque
-                "Jan van Eyckplein, 8000 Brugge, Belgium", // Place Jan van Eyck - Place médiévale
-                "Dijver 12, 8000 Brugge, Belgium", // Musée Groeninge - Musée d'art
-                "Simon Stevinplein, 8000 Brugge, Belgium" // Place Simon Stevin - Place publique
+                "Markt, 8000 Brugge, Belgium", // Markt – Grand-Place de Bruges
+                "Belfort, Markt 7, 8000 Brugge, Belgium", // Beffroi de Bruges
+                "Burg, 8000 Brugge, Belgium", // Burg – Basilique du Saint-Sang
+                "Sint-Salvatorskathedraal, Sint-Salvatorskoorstraat 8, 8000 Brugge, Belgium", // Cathédrale Saint-Sauveur
+                "Onze-Lieve-Vrouwekerk, Mariastraat, 8000 Brugge, Belgium", // Église Notre-Dame de Bruges
+                "Rozenhoedkaai, 8000 Brugge, Belgium", // Rozenhoedkaai – Quai du Rosaire
+                "Groeningemuseum, Dijver 12, 8000 Brugge, Belgium", // Musée Groeninge
+                "Jan van Eyckplein, 8000 Brugge, Belgium", // Place Jan van Eyck
+                "Minnewater, 8000 Brugge, Belgium", // Minnewater – Lac d'Amour
+                "Begijnhof, Wijngaardplein, 8000 Brugge, Belgium" // Béguinage de Bruges
             ]
             return addresses[index % addresses.count]
         case .namur:
@@ -1302,7 +4727,7 @@ class GuidedToursViewModel: ObservableObject {
                 "Canal City Hakata, 1-2 Sumiyoshi, Hakata Ward, Fukuoka, Japan",
                 "Dazaifu Tenmangu, 4-7-1 Saifu, Dazaifu, Fukuoka, Japan",
                 "Fukuoka Yafuoku! Dome, 2-2-2 Jigyohama, Chuo Ward, Fukuoka, Japan",
-                "Uminonakamichi Seaside Park, 18-25 Saitozaki, Higashi Ward, Fukuoka, Japan",
+                "Uminonakamichi Seaside Park, 18-25 Saitozaki, Higashisakura, Higashi Ward, Fukuoka, Japan",
                 "Fukuoka Art Museum, 1-6 Ohori Koen, Chuo Ward, Fukuoka, Japan",
                 "Kushida Shrine, 1-41 Kamikawabatamachi, Hakata Ward, Fukuoka, Japan",
                 "Tenjin Underground City, Tenjin, Chuo Ward, Fukuoka, Japan"
@@ -1713,7 +5138,6 @@ class GuidedToursViewModel: ObservableObject {
                 "Calle de la Sendeja, 48005 Bilbao, Spain" // Calle de la Sendeja
             ]
             return addresses[index % addresses.count]
-
         // PAYS-BAS
         case .amsterdam:
             let addresses = [
@@ -1774,7 +5198,6 @@ class GuidedToursViewModel: ObservableObject {
                 "Oudegracht, 3511 Utrecht, Netherlands" // Oudegracht
             ]
             return addresses[index % addresses.count]
-
         case .eindhoven:
             let addresses = [
                 "Markt, 5611 Eindhoven, Netherlands", // Place du Marché
@@ -2020,7 +5443,6 @@ class GuidedToursViewModel: ObservableObject {
             return "Adresse touristique, \(city.displayName)"
         }
     }
-    
     // MARK: - Tours détaillés pour Paris
         private func createParisTours() -> [GuidedTour] {
             return [
@@ -2270,7 +5692,6 @@ class GuidedToursViewModel: ObservableObject {
                     rating: 4.6,
                     price: nil
                 ),
-                
                 // Tour 3: Seine et jardins secrets
                 GuidedTour(
                     id: "paris_seine_gardens",
@@ -2486,7 +5907,6 @@ class GuidedToursViewModel: ObservableObject {
                     rating: 4.4,
                     price: 8.0
                 ),
-                
                 // Tour 5: Quartiers branchés et tendance
                 GuidedTour(
                     id: "paris_trendy",
@@ -2596,196 +6016,7 @@ class GuidedToursViewModel: ObservableObject {
                 )
             ]
         }
-        
-        // MARK: - Tours détaillés pour Bruxelles
-        private func createBrusselsTours() -> [GuidedTour] {
-            return [
-                // Tour 1: Centre historique de Bruxelles
-                GuidedTour(
-                    id: "brussels_historic",
-                    title: "🏰 Centre historique de Bruxelles",
-                    city: .brussels,
-                    description: "Découvrez la Grand-Place, joyau de l'architecture gothique et baroque. Manneken Pis, galeries royales et chocolateries historiques vous attendent.",
-                    duration: 5400, // 1h30
-                    difficulty: .easy,
-                    stops: [
-                        TourStop(
-                            id: "brussels_grand_place",
-                            location: Location(
-                                id: "grand_place_brussels",
-                                name: "Grand-Place de Bruxelles",
-                                address: "Grand-Place, 1000 Bruxelles",
-                                latitude: 50.8467, longitude: 4.3525,
-                                category: .historical,
-                                description: "Une des plus belles places du monde selon Victor Hugo",
-                                imageURL: nil,
-                                rating: 4.9,
-                                openingHours: "24h/24",
-                                recommendedDuration: 3600,
-                                visitTips: ["Tapis de fleurs en août (années paires)", "Illuminations magiques la nuit", "Visitez les guildes"]
-                            ),
-                            order: 1,
-                            audioGuideText: """
-                            Bienvenue sur la Grand-Place, 'plus beau théâtre du monde' selon Jean Cocteau !
-                            
-                            Cette place gothique du XVe siècle fut entièrement détruite par l'armée française en 1695, puis reconstruite en 4 ans dans un élan collectif exceptionnel. L'Hôtel de Ville gothique (1402) trône avec sa flèche de 96 mètres.
-                            
-                            Chaque maison des corporations porte un nom : l'Étoile, le Cygne, l'Arbre d'Or (brasseurs), la Louve (archers). Leurs façades dorées brillent au soleil, créant un kaléidoscope architectural unique.
-                            
-                            Tous les deux ans en août, un tapis de fleurs de 1800 m² recouvre entièrement la place. 500 000 bégonias composent des motifs éphémères admirés par le monde entier.
-                            
-                            Victor Hugo, exilé ici, la décrivit comme 'admirable' dans ses lettres. Cette harmonie baroque-gothique inspire artistes et poètes depuis 3 siècles.
-                            """,
-                            audioGuideURL: "https://images.unsplash.com/photo-1553975213-4c35f5a2a1e6?w=400",
-                            visitDuration: TimeInterval(1200), // 20 min
-                            tips: "🌸 Tapis de fleurs en août (années paires) • Illuminations magiques la nuit"
-                        ),
-                        TourStop(
-                            id: "brussels_manneken_pis",
-                            location: Location(
-                                id: "manneken_pis",
-                                name: "Manneken Pis",
-                                address: "Rue de l'Étuve, 1000 Bruxelles",
-                                latitude: 50.8450, longitude: 4.3500,
-                                category: .culture,
-                                description: "Célèbre statue symbole de l'esprit bruxellois",
-                                imageURL: nil,
-                                rating: 4.2,
-                                openingHours: "24h/24",
-                                recommendedDuration: 900,
-                                visitTips: ["Consultez le calendrier des costumes", "Photo de groupe incontournable", "Visitez le musée des costumes"]
-                            ),
-                            order: 2,
-                            audioGuideText: """
-                            Voici Manneken Pis, petit bonhomme de 61 centimètres qui fait la fierté de Bruxelles !
-                            
-                            Cette fontaine de bronze (1619) de Jérôme Duquesnoy symbolise l'esprit irrévérencieux bruxellois. Selon la légende, un petit garçon sauva la ville en éteignant une bombe d'un jet d'urine !
-                            
-                            Sa garde-robe compte plus de 1000 costumes offerts par le monde entier : Elvis, samouraï, cosmonaute, footballeur... Il change de tenue 130 fois par an selon un calendrier officiel.
-                            
-                            Louis XV lui offrit un habit brodé d'or en 1747. Les costumes sont conservés au Musée de la Ville. Chaque don de costume s'accompagne d'une cérémonie et d'une dégustation de bière !
-                            
-                            Ne manquez pas ses 'sœurs' : Jeanneke Pis (fillette) dans l'impasse de la Fidélité, et Zinneke Pis (chien) rue des Chartreux. Trilogie espiègle de l'humour belge !
-                            """,
-                            audioGuideURL: "https://images.unsplash.com/photo-1571847140471-1d7766e825ea?w=400",
-                            visitDuration: TimeInterval(600), // 10 min
-                            tips: "📅 Consultez le calendrier des costumes • 📸 Photo de groupe incontournable"
-                        ),
-                        TourStop(
-                            id: "brussels_galeries_royales",
-                            location: Location(
-                                id: "galeries_royales",
-                                name: "Galeries Royales Saint-Hubert",
-                                address: "Galerie du Roi, 1000 Bruxelles",
-                                latitude: 50.8472, longitude: 4.3565,
-                                category: .culture,
-                                description: "Première galerie commerciale couverte d'Europe",
-                                imageURL: nil,
-                                rating: 4.6,
-                                openingHours: "7h00 - 20h00",
-                                recommendedDuration: 1800,
-                                visitTips: ["Dégustez du chocolat Neuhaus", "Café au Mokafe historique", "Visitez la librairie Jousseaume"]
-                            ),
-                            order: 3,
-                            audioGuideText: """
-                            Entrez dans les Galeries Royales Saint-Hubert, première galerie commerciale couverte d'Europe !
-                            
-                            Inaugurées en 1847, elles révolutionnent le commerce européen. Leur verrière de fer et verre, longue de 213 mètres, protège chalands et marchands des intempéries. Architecture novatrice inspirée des passages parisiens !
-                            
-                            Trois galeries : du Roi, de la Reine, des Princes. Le style néo-classique italien crée une atmosphère raffinée. Mosaïques au sol, dorures aux plafonds, élégance bourgeoise du XIXe siècle.
-                            
-                            Ici naquit la BD belge ! En 1929, Hergé publie les premières aventures de Tintin dans 'Le Petit Vingtième', journal édité galerie de la Reine. La tradition se perpétue avec de nombreuses librairies BD.
-                            
-                            Chocolatiers, dentellières, libraires perpétuent l'artisanat belge. Café A la Mort Subite sert ses lambics depuis 1928. Théâtre des Galeries programme auteurs contemporains.
-                            """,
-                            audioGuideURL: "https://images.unsplash.com/photo-1568515387631-8b650bbcdb90?w=400",
-                            visitDuration: TimeInterval(800), // 13 min
-                            tips: "🍫 Dégustez du chocolat Neuhaus • Café au Mokafe historique"
-                        )
-                    ],
-                    imageURL: "https://images.unsplash.com/photo-1553975213-4c35f5a2a1e6?w=400",
-                    rating: 4.7,
-                    price: nil
-                ),
-                
-                // Tour 2: Art nouveau et chocolat
-                GuidedTour(
-                    id: "brussels_art_nouveau",
-                    title: "🎭 Art nouveau et chocolat",
-                    city: .brussels,
-                    description: "Découvrez l'Art nouveau bruxellois avec Victor Horta et les maisons de maître. Terminez par une dégustation chocolat dans les meilleures chocolateries.",
-                    duration: 6300, // 1h45
-                    difficulty: .moderate,
-                    stops: [
-                        TourStop(
-                            id: "brussels_horta_museum",
-                            location: Location(
-                                id: "horta_museum",
-                                name: "Musée Horta",
-                                address: "25 Rue Américaine, 1060 Saint-Gilles",
-                                latitude: 50.8275, longitude: 4.3475,
-                                category: .museum,
-                                description: "Ancienne maison-atelier du maître de l'Art nouveau",
-                                imageURL: "https://images.unsplash.com/photo-1568515387631-8b650bbcdb90?w=400",
-                                rating: 4.5,
-                                openingHours: "14h00 - 17h30",
-                                recommendedDuration: 5400,
-                                visitTips: ["Réservation conseillée", "Autres maisons Horta : Tassel, Solvay, Van Eetvelde", "Visitez le quartier Art nouveau"]
-                            ),
-                            order: 1,
-                            audioGuideText: """
-                            Découvrez la maison-atelier de Victor Horta, père de l'Art nouveau européen !
-                            
-                            Cette maison (1898-1901) révolutionne l'architecture : plan ouvert, puits de lumière, escalier-sculpture en fer forgé. Horta invente un nouveau style où la nature inspire chaque détail : motifs floraux, courbes organiques.
-                            
-                            L'Art nouveau naît en réaction contre l'industrialisation. Horta veut réconcilier art et technique, beauté et fonction. Ses innovations : structure métallique apparente, grandes verrières, chauffage central intégré.
-                            
-                            Admirez la rampe d'escalier : cette spirale de fer et laiton évoque une liane grimpante. Les vitraux diffusent une lumière dorée. Chaque poignée de porte, chaque luminaire est dessiné par l'architecte.
-                            
-                            Bruxelles compte 80 bâtiments Art nouveau ! Horta, Van de Velde, Hankar créent un mouvement artistique total : architecture, mobilier, arts décoratifs. Influence mondiale de l'École de Bruxelles.
-                            """,
-                            audioGuideURL: "https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?w=400",
-                            visitDuration: TimeInterval(1800), // 30 min
-                            tips: "🏛️ Réservation conseillée • Autres maisons Horta : Tassel, Solvay, Van Eetvelde"
-                        ),
-                        TourStop(
-                            id: "brussels_sablon",
-                            location: Location(
-                                id: "place_du_sablon",
-                                name: "Place du Grand Sablon",
-                                address: "Place du Grand Sablon, 1000 Bruxelles",
-                                latitude: 50.8420, longitude: 4.3580,
-                                category: .culture,
-                                description: "Quartier des antiquaires et chocolatiers",
-                                imageURL: "https://images.unsplash.com/photo-1571847140471-1d7766e825ea?w=400",
-                                rating: 4.4,
-                                openingHours: "24h/24",
-                                recommendedDuration: 3600,
-                                visitTips: ["Dégustation gratuite dans la plupart des boutiques", "Marché antiquités samedi", "Visitez l'église Notre-Dame du Sablon"]
-                            ),
-                            order: 2,
-                            audioGuideText: """
-                            Bienvenue au Sablon, quartier élégant des antiquaires et chocolatiers de renom !
-                            
-                            Cette place gothique tire son nom du sable extrait ici au Moyen Âge. L'église Notre-Dame du Sablon (XVe siècle) est un joyau de gothique flamboyant, illuminée magnifiquement la nuit.
-                            
-                            Depuis 1751, Pierre Marcolini perpétue l'art chocolatier. Ses ganaches aux épices révolutionnent la chocolaterie mondiale. Wittamer, chocolatier de la Cour depuis 1910, crée ses pralines dans les règles ancestrales.
-                            
-                            Le marché d'antiquités (week-end) transforme la place en musée à ciel ouvert : horlogerie, mobilier, livres rares, argenterie. Chineurs du monde entier y dénichent des trésors.
-                            
-                            Astuce de dégustation : laissez fondre le chocolat sur la langue pour libérer tous les arômes. Un bon chocolat belge révèle ses notes : cacaoté, fruité, épicé... Chaque maison a sa signature gustative !
-                            """,
-                            audioGuideURL: "https://images.unsplash.com/photo-1587222086022-c4067dab9bd6?w=400",
-                            visitDuration: TimeInterval(1200), // 20 min
-                            tips: "🍫 Dégustation gratuite dans la plupart des boutiques • Marché antiquités samedi"
-                        )
-                    ],
-                    imageURL: "https://images.unsplash.com/photo-1568515387631-8b650bbcdb90?w=400",
-                    rating: 4.8,
-                    price: 15.0
-                )
-            ]
-        }
+        // MARK: - Tours détaillés pour Bruxelles (supprimé – remplacé par variantes fixes)
         
         // MARK: - Tours détaillés pour Luxembourg
         private func createLuxembourgTours() -> [GuidedTour] {
@@ -2986,7 +6217,6 @@ class GuidedToursViewModel: ObservableObject {
                 )
             ]
         }
-        
         // MARK: - Fonction générique pour toutes les villes
         private func createGenericTours(for city: City) -> [GuidedTour] {
             // Générer des tours pour toutes les villes
@@ -3086,7 +6316,6 @@ class GuidedToursViewModel: ObservableObject {
                 visitTips: nil
             )
         }
-        
         private func getRealCoordinates(for city: City, index: Int) -> (lat: Double, lng: Double) {
             switch city {
             case .tangier:
@@ -3382,6 +6611,19 @@ class GuidedToursViewModel: ObservableObject {
                 return ["Promenade des Anglais", "Vieille Ville", "Colline du Château", "Place Masséna", "Cours Saleya", "Musée Matisse", "Cathédrale Sainte-Réparate", "Parc Phoenix", "Monastère de Cimiez", "Port de Nice"]
             case .nantes:
                 return ["Château des Ducs de Bretagne", "Cathédrale Saint-Pierre-et-Saint-Paul", "Île de Nantes", "Place Graslin", "Passage Pommeraye", "Jardin des Plantes", "Musée d'Arts de Nantes", "Quartier Bouffay", "Tour LU", "Mémorial de l'Abolition de l'Esclavage"]
+            case .luxembourg:
+                return [
+                    "Palais grand-ducal",
+                    "Cathédrale Notre-Dame de Luxembourg",
+                    "Place Guillaume II (Knuedler)",
+                    "Musée Dräi Eechelen",
+                    "Pont Adolphe",
+                    "Place d'Armes",
+                    "Gëlle Fra – Monument du Souvenir",
+                    "Casemates du Bock",
+                    "Musée national d'histoire et d'art (MNHA)",
+                    "Grund – Quartier historique"
+                ]
             case .tangier:
                 return ["Place du 9 Avril 1947", "Kasbah de Tanger", "Place de France", "Grand Socco", "Petit Socco", "Cap Spartel", "Grotte d'Hercule", "Plage de Malabata", "Musée de la Kasbah", "Cimetière américain"]
             case .casablanca:
@@ -3456,7 +6698,6 @@ class GuidedToursViewModel: ObservableObject {
                 return Array(genericNames.prefix(6))
             }
         }
-        
         private func getTourTitles(for city: City) -> [String] {
             switch city {
             case .paris:
@@ -3702,514 +6943,6 @@ class GuidedToursViewModel: ObservableObject {
             }
         }
         
-        private func getAudioGuideText(for locationName: String, in city: City, index: Int) -> String {
-            switch city {
-            case .paris:
-                switch locationName {
-                case "Tour Eiffel":
-                    return """
-                    Bienvenue devant la Tour Eiffel, la Dame de Fer, symbole incontesté de Paris et de la France !
-                    
-                    Inaugurée en 1889 pour l'Exposition Universelle, elle fut la plus haute structure du monde pendant 41 ans. Gustave Eiffel, son ingénieur, a relevé le défi de construire une tour de 324 mètres en fer puddlé, un matériau révolutionnaire pour l'époque.
-                    
-                    Anecdote : La Tour Eiffel peut varier de 15 cm en hauteur en fonction de la température ! Le fer se dilate sous la chaleur et se contracte par temps froid.
-                    
-                    Saviez-vous que Gustave Eiffel avait un appartement secret au sommet ? Il y recevait des invités de marque comme Thomas Edison. Imaginez la vue imprenable depuis ce perchoir privé !
-                    
-                    Chaque soir, la Tour s'illumine et scintille pendant 5 minutes toutes les heures, un spectacle magique à ne pas manquer. C'est un moment féerique qui attire des millions de visiteurs chaque année.
-                    """
-                case "Arc de Triomphe":
-                    return """
-                    L'Arc de Triomphe domine majestueusement les Champs-Élysées depuis 1836 !
-                    
-                    Commandé par Napoléon en 1806 pour célébrer ses victoires militaires, cet arc mesure 50 mètres de haut et 45 mètres de large. Il est inspiré de l'arc antique de Titus à Rome.
-                    
-                    Sous l'Arc repose le Soldat Inconnu depuis 1921, dont la flamme est ravivée chaque soir à 18h30. Cette tradition honore tous les soldats morts pour la France.
-                    
-                    Les sculptures sont remarquables : 'La Marseillaise' de François Rude côté Champs-Élysées, 'Le Triomphe de 1810' de Cortot côté Wagram. Les piliers portent les noms de 128 batailles et 558 généraux.
-                    
-                    De sa terrasse, la vue sur les 12 avenues qui rayonnent depuis la place de l'Étoile est saisissante : on comprend pourquoi Haussmann a conçu Paris comme une étoile !
-                    """
-                case "Notre-Dame":
-                    return """
-                    Notre-Dame de Paris, 850 ans d'histoire et de foi !
-                    
-                    Commencée en 1163 sous l'évêque Maurice de Sully, achevée vers 1345. Cette cathédrale gothique révolutionne l'architecture : voûtes sur croisées d'ogives, arcs-boutants, rosaces géantes.
-                    
-                    Victor Hugo la sauve de la démolition en 1831 avec son roman 'Notre-Dame de Paris'. Napoléon s'y fait couronner empereur en 1804. De Gaulle y célèbre la Libération en 1944.
-                    
-                    L'incendie d'avril 2019 émeut le monde entier. La flèche s'effondre, la charpente 'forêt' du 13ème siècle brûle, mais les tours et les trésors sont sauvés par les pompiers de Paris.
-                    
-                    Reconstruction en cours : les artisans redonnent vie aux techniques médiévales. Charpentiers, tailleurs de pierre, maîtres verriers reconstruisent à l'identique cette merveille gothique.
-                    """
-                case "Louvre":
-                    return """
-                    Voici le Louvre, plus grand musée du monde avec ses 35 000 œuvres exposées !
-                    
-                    Ancien palais royal construit en 1190, transformé en musée en 1793 pendant la Révolution française. Ses 8 départements abritent des trésors de l'humanité : Mona Lisa, Vénus de Milo, Victoire de Samothrace.
-                    
-                    La pyramide de verre, inaugurée en 1989 par l'architecte Ieoh Ming Pei, fut d'abord controversée. Aujourd'hui, elle illumine le hall Napoléon et est devenue emblématique du musée moderne.
-                    
-                    10 millions de visiteurs par an viennent admirer 9 000 ans d'art et de civilisations. Pour voir toutes les œuvres 30 secondes chacune, il faudrait... 100 jours non-stop !
-                    
-                    La Joconde mesure seulement 77 cm sur 53 cm. Son sourire énigmatique fascine depuis 5 siècles. Léonard de Vinci l'a peinte entre 1503 et 1506, mais ne s'en est jamais séparé.
-                    """
-                case "Sacré-Cœur":
-                    return """
-                    Le Sacré-Cœur, joyau blanc dominant Paris depuis la butte Montmartre !
-                    
-                    Construit entre 1875 et 1914, ce monument expiatoire répond aux malheurs de la France : défaite de 1870, Commune de Paris. L'architecte Paul Abadie s'inspire de Saint-Marc de Venise et du Panthéon de Rome.
-                    
-                    La basilique est construite en pierre de Château-Landon, qui blanchit avec l'âge et la pluie. C'est pourquoi elle reste toujours immaculée !
-                    
-                    L'intérieur abrite la plus grande mosaïque de France : 475 mètres carrés représentant le Christ en gloire. Les vitraux, détruits en 1944, ont été refaits après-guerre.
-                    
-                    Depuis le parvis, la vue sur Paris est spectaculaire. On dit que par temps clair, on peut voir jusqu'à 50 kilomètres à la ronde !
-                    """
-                case "Champs-Élysées":
-                    return """
-                    Les Champs-Élysées, la plus belle avenue du monde !
-                    
-                    Longue de 1,9 kilomètres, elle relie la place de la Concorde à l'Arc de Triomphe. Créée au 17ème siècle, elle était alors un simple chemin bordé de champs et de marais.
-                    
-                    Haussmann la transforme au 19ème siècle en avenue prestigieuse. Les marronniers, plantés en 1834, donnent son caractère unique à cette artère majestueuse.
-                    
-                    Anecdote : chaque année, le 14 juillet, le défilé militaire descend les Champs-Élysées. Et le dernier dimanche d'août, le Tour de France s'y termine en apothéose !
-                    
-                    Les Champs-Élysées accueillent les plus grandes marques du luxe mondial. C'est aussi le lieu de célébration des victoires sportives françaises, comme en 1998 pour la Coupe du monde de football.
-                    """
-                case "Place de la Concorde":
-                    return """
-                    La place de la Concorde, la plus grande place de Paris !
-                    
-                    Créée entre 1755 et 1775, elle s'appelait d'abord place Louis XV. Pendant la Révolution, elle devient place de la Révolution et voit l'exécution de Louis XVI et Marie-Antoinette.
-                    
-                    L'obélisque de Louxor, offert par l'Égypte en 1836, trône au centre. Haute de 23 mètres, elle date du règne de Ramsès II, il y a 3300 ans. Les hiéroglyphes racontent ses exploits militaires.
-                    
-                    Les 8 statues représentent les principales villes de France : Lyon, Marseille, Bordeaux, Nantes, Rouen, Brest, Strasbourg et Lille. Chaque ville est représentée par une femme assise.
-                    
-                    Anecdote : l'obélisque a failli tomber lors de son transport depuis l'Égypte ! Le navire qui le transportait a failli couler dans la Méditerranée.
-                    """
-                case "Palais Garnier":
-                    return """
-                    Le Palais Garnier, temple de l'art lyrique et de l'architecture du 19ème siècle !
-                    
-                    Construit entre 1861 et 1875 par Charles Garnier, il est inauguré en 1875. L'empereur Napoléon III le commande après un attentat contre lui à l'ancien opéra de la rue Le Peletier.
-                    
-                    Le grand escalier de marbre est un chef-d'œuvre : 30 mètres de haut, éclairé par un lustre monumental. Le plafond de la salle, peint par Chagall en 1964, représente les plus grandes œuvres lyriques.
-                    
-                    Le fantôme de l'Opéra, créé par Gaston Leroux en 1910, a rendu ce lieu légendaire. La loge n°5, réservée au fantôme, existe réellement !
-                    
-                    L'Opéra abrite la plus grande scène d'Europe : 60 mètres de large, 27 mètres de profondeur. Le plafond de la salle pèse 8 tonnes et peut être soulevé pour changer les décors.
-                    """
-                case "Parc du Luxembourg":
-                    return """
-                    Le jardin du Luxembourg, poumon vert du Quartier Latin !
-                    
-                    Créé en 1612 par Marie de Médicis, il s'inspire des jardins de Boboli à Florence. Le palais du Luxembourg, aujourd'hui siège du Sénat, était sa résidence parisienne.
-                    
-                    Le parc abrite 106 statues, dont la célèbre Statue de la Liberté de Bartholdi, réplique de celle de New York. La fontaine Médicis, construite en 1630, est un chef-d'œuvre de l'art baroque.
-                    
-                    Anecdote : le parc compte 20 000 arbres, dont des marronniers centenaires. Les enfants peuvent y faire naviguer des voiliers miniatures sur le grand bassin octogonal.
-                    
-                    Le jardin est divisé en plusieurs parties : le jardin à la française, le jardin anglais, l'orangerie. Il accueille aussi des ruches et un rucher-école depuis 1856 !
-                    """
-                case "Musée d'Orsay":
-                    return """
-                    Le musée d'Orsay, temple de l'art du 19ème siècle !
-                    
-                    Installé dans l'ancienne gare d'Orsay, construite pour l'Exposition universelle de 1900, le musée ouvre ses portes en 1986. L'architecte Gae Aulenti a transformé cette gare en écrin pour les arts.
-                    
-                    Le musée abrite la plus grande collection d'œuvres impressionnistes au monde : Monet, Renoir, Degas, Van Gogh, Cézanne. La salle des fêtes de l'hôtel, reconstituée, témoigne du luxe de l'époque.
-                    
-                    L'horloge monumentale, vestige de la gare, offre une vue imprenable sur Paris. Elle rappelle que ce lieu était autrefois le terminus de la ligne Paris-Orléans.
-                    
-                    Anecdote : la gare était si moderne pour l'époque qu'elle avait l'électricité et des ascenseurs ! Elle a servi de décor au film 'Le Procès' d'Orson Welles en 1962.
-                    """
-                default:
-                    return "Bienvenue à \(locationName) ! Découvrez l'histoire fascinante de ce lieu emblématique de Paris avec des anecdotes captivantes et des détails historiques précis."
-                }
-            case .tangier:
-                switch locationName {
-                case "Place du 9 Avril 1947":
-                    return """
-                    Bienvenue sur la Place du 9 Avril 1947, cœur historique de Tanger !
-                    
-                    Cette place commémore le discours du sultan Mohammed V, prononcé le 9 avril 1947, qui marqua le début de la lutte pour l'indépendance du Maroc. Le sultan y déclara son attachement à l'unité nationale et à la souveraineté marocaine.
-                    
-                    La place est entourée de bâtiments coloniaux et de cafés historiques. C'est ici que se réunissaient les intellectuels et les nationalistes marocains pendant la période du protectorat.
-                    
-                    Anecdote : la place était autrefois le point de départ des caravanes vers l'Afrique subsaharienne. Les marchands y négociaient leurs marchandises avant de partir vers le sud.
-                    
-                    Aujourd'hui, c'est un lieu de rencontre animé où les Tangérois se retrouvent pour discuter, boire un thé à la menthe ou simplement observer la vie qui passe.
-                    """
-                case "Kasbah de Tanger":
-                    return """
-                    La Kasbah de Tanger, forteresse historique dominant la médina !
-                    
-                    Construite au 17ème siècle par les sultans alaouites, cette citadelle protégeait la ville des attaques maritimes. Ses murs épais et ses tours de guet témoignent de son rôle défensif stratégique.
-                    
-                    La Kasbah abrite le palais du sultan, transformé en musée. Les jardins andalous, avec leurs fontaines et leurs orangers, offrent une oasis de verdure au cœur de la ville.
-                    
-                    Anecdote : la Kasbah a servi de décor à de nombreux films, notamment 'Casablanca' en 1942. Humphrey Bogart y a tourné plusieurs scènes mémorables.
-                    
-                    Depuis les remparts, la vue sur le détroit de Gibraltar est spectaculaire. Par temps clair, on peut voir les côtes espagnoles et même l'Afrique du Nord au-delà du détroit.
-                    """
-                case "Place de France":
-                    return """
-                    La Place de France, témoin de l'histoire cosmopolite de Tanger !
-                    
-                    Cette place élégante, construite pendant la période internationale de Tanger (1923-1956), reflète l'influence française dans la ville. Elle était le centre de la zone française du protectorat.
-                    
-                    Les bâtiments qui l'entourent mélangent architecture française et éléments mauresques. Les arcades abritent des cafés historiques où se réunissaient les écrivains et artistes de l'époque.
-                    
-                    Anecdote : la place était le point de rencontre des espions internationaux pendant la Seconde Guerre mondiale. Tanger, ville neutre, attirait les agents de toutes les puissances.
-                    
-                    Aujourd'hui, la place conserve son charme d'antan avec ses terrasses de cafés et ses palmiers. C'est un lieu prisé pour prendre un verre en fin d'après-midi.
-                    """
-                case "Grand Socco":
-                    return """
-                    Le Grand Socco, place centrale et animée de Tanger !
-                    
-                    'Socco' signifie 'marché' en arabe. Cette place était autrefois le cœur commercial de la ville, où se tenaient les marchés traditionnels. Les caravanes y déchargeaient leurs marchandises.
-                    
-                    La place est dominée par l'église espagnole, construite en 1925, qui témoigne de l'influence espagnole à Tanger. Son architecture néo-mudéjar est unique dans la ville.
-                    
-                    Anecdote : le Grand Socco était le point de départ des bus vers l'Espagne. Les Tangérois partaient d'ici pour traverser le détroit vers Algeciras ou Tarifa.
-                    
-                    Aujourd'hui, c'est un carrefour animé où se croisent piétons, voitures et bus. Les cafés autour de la place sont des lieux de rencontre traditionnels.
-                    """
-                case "Petit Socco":
-                    return """
-                    Le Petit Socco, cœur historique de la médina de Tanger !
-                    
-                    Cette petite place, plus intime que le Grand Socco, était le centre de la vie sociale traditionnelle. Les cafés qui l'entourent sont historiques et ont accueilli de nombreux écrivains.
-                    
-                    Le Petit Socco était le lieu de rencontre des intellectuels et des artistes pendant la période internationale. William Burroughs, Paul Bowles et d'autres écrivains y ont séjourné.
-                    
-                    Anecdote : le café Central, sur la place, était le rendez-vous des espions et des journalistes pendant la guerre froide. Les conversations politiques y étaient animées.
-                    
-                    Aujourd'hui, la place conserve son atmosphère authentique. Les cafés traditionnels servent encore le thé à la menthe et les pâtisseries marocaines.
-                    """
-                case "Cap Spartel":
-                    return """
-                    Le Cap Spartel, point de rencontre entre l'Atlantique et la Méditerranée !
-                    
-                    Ce cap majestueux marque l'extrémité nord-ouest de l'Afrique. C'est ici que se rencontrent l'océan Atlantique et la mer Méditerranée, créant des courants marins spectaculaires.
-                    
-                    Le phare du Cap Spartel, construit en 1864 par le sultan Mohammed IV, guide les navires depuis plus de 150 ans. Il mesure 24 mètres de haut et sa portée atteint 30 kilomètres.
-                    
-                    Anecdote : le phare a été construit avec des pierres importées d'Angleterre. Son architecture unique mélange styles européen et mauresque.
-                    
-                    Depuis le cap, la vue sur le détroit de Gibraltar est époustouflante. Par temps clair, on peut voir les côtes espagnoles et même les montagnes du Rif au sud.
-                    """
-                case "Grotte d'Hercule":
-                    return """
-                    La Grotte d'Hercule, légende et géologie réunies !
-                    
-                    Cette grotte naturelle, creusée par l'érosion marine, s'ouvre sur l'Atlantique. Selon la légende, Hercule s'y serait reposé après avoir séparé l'Europe de l'Afrique en créant le détroit de Gibraltar.
-                    
-                    La grotte présente une ouverture en forme de carte de l'Afrique, créée naturellement par l'érosion. Les stalactites et stalagmites témoignent de millions d'années d'histoire géologique.
-                    
-                    Anecdote : la grotte a servi de refuge aux contrebandiers et aux pêcheurs pendant des siècles. Elle abrite aussi des peintures rupestres datant de la préhistoire.
-                    
-                    L'ambiance mystérieuse de la grotte, avec le bruit des vagues et les jeux de lumière, en fait un lieu magique et contemplatif.
-                    """
-                case "Plage de Malabata":
-                    return """
-                    La Plage de Malabata, perle de l'Atlantique tangérois !
-                    
-                    Cette plage de sable fin s'étend sur plusieurs kilomètres le long de la côte atlantique. Son nom 'Malabata' signifie 'la bien-aimée' en arabe dialectal.
-                    
-                    La plage est bordée de falaises calcaires qui offrent des vues spectaculaires sur l'océan. Les couchers de soleil y sont particulièrement magnifiques.
-                    
-                    Anecdote : la plage était autrefois le lieu de prédilection des artistes et écrivains de la Beat Generation. Paul Bowles y passait de longues heures à contempler l'horizon.
-                    
-                    Aujourd'hui, c'est un lieu de détente prisé des Tangérois et des touristes. Les restaurants de poisson frais bordent la plage.
-                    """
-                case "Musée de la Kasbah":
-                    return """
-                    Le Musée de la Kasbah, trésor culturel de Tanger !
-                    
-                    Installé dans l'ancien palais du sultan, ce musée abrite une collection exceptionnelle d'objets d'art et d'artisanat marocain. L'architecture du palais est un chef-d'œuvre de l'art islamique.
-                    
-                    Les jardins andalous du musée, avec leurs fontaines et leurs orangers, offrent une oasis de verdure. Ils témoignent de l'influence arabo-andalouse dans la région.
-                    
-                    Anecdote : le palais a accueilli de nombreux dignitaires étrangers, dont Winston Churchill qui y a séjourné pendant la Seconde Guerre mondiale.
-                    
-                    Les collections comprennent des céramiques, des tapis, des armes et des bijoux traditionnels. Chaque pièce raconte une partie de l'histoire de Tanger.
-                    """
-                case "Cimetière américain":
-                    return """
-                    Le Cimetière américain, mémoire de l'histoire militaire !
-                    
-                    Ce cimetière militaire américain honore les soldats américains morts pendant la Seconde Guerre mondiale en Afrique du Nord. Il est situé sur une colline offrant une vue panoramique sur Tanger.
-                    
-                    Les tombes blanches, parfaitement alignées, témoignent du sacrifice de ces hommes. Le cimetière est entretenu par l'American Battle Monuments Commission.
-                    
-                    Anecdote : le cimetière abrite aussi les tombes de quelques civils américains qui vivaient à Tanger pendant la guerre. C'est un lieu de recueillement et de mémoire.
-                    
-                    L'architecture du cimetière, avec ses colonnes et ses jardins, reflète le style néoclassique américain. C'est un lieu de paix et de contemplation.
-                    """
-                default:
-                    return "Bienvenue à \(locationName) ! Découvrez l'histoire fascinante de ce lieu emblématique de Tanger avec des anecdotes captivantes et des détails historiques précis."
-                }
-            case .casablanca:
-                switch locationName {
-                case "Mosquée Hassan II":
-                    return """
-                    La Mosquée Hassan II, chef-d'œuvre architectural de Casablanca !
-                    
-                    Construite entre 1986 et 1993, cette mosquée est la plus grande du Maroc et l'une des plus grandes au monde. Elle peut accueillir 25 000 fidèles à l'intérieur et 80 000 sur l'esplanade.
-                    
-                    Le minaret, haut de 210 mètres, est le plus haut du monde. Il est surmonté d'un laser qui pointe vers La Mecque. L'architecture mélange styles traditionnel marocain et moderne.
-                    
-                    Anecdote : la mosquée est construite partiellement sur la mer. Le sol en verre permet de voir l'océan Atlantique sous les pieds des fidèles pendant la prière.
-                    
-                    Les matériaux utilisés viennent de tout le Maroc : marbre d'Agadir, bois de cèdre de l'Atlas, zelliges de Fès. C'est un véritable musée de l'artisanat marocain.
-                    """
-                case "Place Mohammed V":
-                    return """
-                    La Place Mohammed V, cœur administratif de Casablanca !
-                    
-                    Cette place majestueuse, construite pendant le protectorat français, est le centre névralgique de la ville. Elle abrite les principaux bâtiments administratifs et la préfecture.
-                    
-                    L'architecture de la place mélange styles art déco et mauresque. Les bâtiments qui l'entourent témoignent de l'influence française dans la ville moderne.
-                    
-                    Anecdote : la place était le lieu de rassemblement des manifestations pour l'indépendance du Maroc. C'est ici que le sultan Mohammed V prononça son discours historique en 1955.
-                    
-                    Aujourd'hui, la place est un carrefour animé où se croisent piétons, voitures et tramways. Les palmiers et les fontaines lui donnent un aspect méditerranéen.
-                    """
-                case "Médina de Casablanca":
-                    return """
-                    La Médina de Casablanca, cœur historique de la ville !
-                    
-                    Bien que plus récente que les médinas de Fès ou Marrakech, celle de Casablanca a son charme unique. Elle fut construite au 18ème siècle par le sultan Sidi Mohammed Ben Abdallah.
-                    
-                    Les ruelles étroites et sinueuses abritent des souks traditionnels, des mosquées historiques et des maisons traditionnelles. L'ambiance y est plus authentique que dans la ville moderne.
-                    
-                    Anecdote : la médina a été partiellement détruite pendant les bombardements de la Seconde Guerre mondiale. Sa reconstruction a préservé son caractère traditionnel.
-                    
-                    Les souks de la médina proposent épices, textiles, bijoux et artisanat local. C'est un lieu idéal pour découvrir l'artisanat marocain authentique.
-                    """
-                case "Cathédrale du Sacré-Cœur":
-                    return """
-                    La Cathédrale du Sacré-Cœur, témoin de l'histoire coloniale !
-                    
-                    Construite entre 1930 et 1953, cette cathédrale de style art déco est un exemple unique d'architecture religieuse moderne au Maroc. Elle fut désaffectée après l'indépendance.
-                    
-                    L'architecture de la cathédrale mélange styles gothique, art déco et éléments mauresques. Les vitraux et les sculptures témoignent du talent des artisans de l'époque.
-                    
-                    Anecdote : la cathédrale a servi de décor au film 'Casablanca' en 1942. Bien que le film ait été tourné en studio, l'architecture de la ville a inspiré les décors.
-                    
-                    Aujourd'hui, la cathédrale est fermée au culte mais reste un monument architectural remarquable. Son état de conservation témoigne de la qualité de sa construction.
-                    """
-                case "Place des Nations Unies":
-                    return """
-                    La Place des Nations Unies, centre moderne de Casablanca !
-                    
-                    Cette place moderne, construite après l'indépendance, symbolise le Maroc contemporain. Elle abrite des bâtiments administratifs et commerciaux de style moderne.
-                    
-                    La place est un carrefour important de la ville, où se croisent plusieurs axes majeurs. L'architecture des bâtiments reflète l'influence internationale de Casablanca.
-                    
-                    Anecdote : la place a été le lieu de nombreuses manifestations politiques et culturelles. Elle symbolise l'ouverture du Maroc vers le monde.
-                    
-                    Les cafés et restaurants autour de la place en font un lieu de rencontre animé. C'est un bon point de départ pour explorer la ville moderne.
-                    """
-                case "Ain Diab":
-                    return """
-                    Ain Diab, quartier balnéaire de Casablanca !
-                    
-                    Ce quartier résidentiel et balnéaire s'étend le long de la corniche atlantique. Il est connu pour ses plages, ses restaurants de poisson et son ambiance décontractée.
-                    
-                    La corniche d'Ain Diab, longue de plusieurs kilomètres, est un lieu de promenade prisé des Casablancais. Les couchers de soleil y sont spectaculaires.
-                    
-                    Anecdote : Ain Diab était autrefois un village de pêcheurs. Le développement du quartier a commencé pendant le protectorat français.
-                    
-                    Les restaurants de poisson frais bordent la corniche. C'est le lieu idéal pour déguster les spécialités maritimes de Casablanca.
-                    """
-                case "Musée du Judaïsme Marocain":
-                    return """
-                    Le Musée du Judaïsme Marocain, témoin de la diversité culturelle !
-                    
-                    Ce musée unique au monde raconte l'histoire de la communauté juive marocaine, présente depuis plus de 2000 ans. Il abrite des objets religieux, des costumes et des documents historiques.
-                    
-                    L'histoire des juifs marocains est riche et complexe. Ils ont contribué à la culture, à l'économie et aux arts du Maroc pendant des siècles.
-                    
-                    Anecdote : le Maroc a été un refuge pour les juifs expulsés d'Espagne en 1492. La communauté juive marocaine était l'une des plus importantes du monde arabe.
-                    
-                    Le musée témoigne de la tolérance religieuse qui a longtemps caractérisé le Maroc. C'est un lieu de mémoire et de dialogue interculturel.
-                    """
-                case "Parc de la Ligue Arabe":
-                    return """
-                    Le Parc de la Ligue Arabe, poumon vert de Casablanca !
-                    
-                    Ce grand parc public, créé pendant le protectorat français, offre une oasis de verdure au cœur de la ville moderne. Il abrite de nombreuses espèces d'arbres et de plantes.
-                    
-                    Le parc est un lieu de détente prisé des Casablancais. Les allées ombragées, les fontaines et les espaces de jeux en font un endroit familial.
-                    
-                    Anecdote : le parc abrite des arbres centenaires plantés pendant la période coloniale. Certains spécimens sont uniques au Maroc.
-                    
-                    Les week-ends, le parc s'anime avec des familles, des promeneurs et des musiciens. C'est un lieu de rencontre et de convivialité.
-                    """
-                case "Marché Central":
-                    return """
-                    Le Marché Central, temple de la gastronomie casablancaise !
-                    
-                    Ce marché couvert, construit dans les années 1920, est le cœur gastronomique de Casablanca. Il abrite des étals de poisson frais, de viande, de fruits et légumes.
-                    
-                    L'architecture du marché, avec ses arcades et ses coupoles, est un exemple d'architecture coloniale bien préservée. L'ambiance y est authentique et animée.
-                    
-                    Anecdote : le marché est réputé pour la qualité de ses produits frais. Les pêcheurs y débarquent leur pêche du matin directement sur les étals.
-                    
-                    Les restaurants du marché proposent les meilleures spécialités maritimes de Casablanca. C'est le lieu idéal pour découvrir la cuisine locale authentique.
-                    """
-                case "Twin Center":
-                    return """
-                    Le Twin Center, symbole de Casablanca moderne !
-                    
-                    Ces deux tours jumelles, construites en 1999, sont devenues le symbole de la Casablanca moderne et internationale. Elles abritent des bureaux, des hôtels et des centres commerciaux.
-                    
-                    Haute de 115 mètres, chaque tour a une forme unique inspirée de l'architecture islamique traditionnelle. L'architecture mélange modernité et références culturelles.
-                    
-                    Anecdote : les tours ont été conçues par l'architecte Ricardo Bofill. Leur forme évoque les minarets traditionnels marocains.
-                    
-                    Le centre commercial au pied des tours propose des boutiques internationales et des restaurants. C'est un lieu de shopping moderne et animé.
-                    """
-                default:
-                    return "Bienvenue à \(locationName) ! Découvrez l'histoire fascinante de ce lieu emblématique de Casablanca avec des anecdotes captivantes et des détails historiques précis."
-                }
-            case .marrakech:
-                switch locationName {
-                case "Place Jemaa el-Fna":
-                    return """
-                    La Place Jemaa el-Fna, cœur battant de Marrakech !
-                    
-                    Cette place mythique, classée au patrimoine mondial de l'UNESCO, est le centre névralgique de la ville depuis le 11ème siècle. Son nom signifie 'Place des Trépassés' en arabe, car elle servait autrefois d'exécutions publiques.
-                    
-                    La place s'anime dès le matin avec les vendeurs de jus d'orange, les charmeurs de serpents, les acrobates et les conteurs. Le soir, elle se transforme en immense restaurant à ciel ouvert avec des dizaines de stands de cuisine traditionnelle.
-                    
-                    Anecdote : la place change complètement d'atmosphère entre le jour et la nuit. Le jour, c'est un lieu de spectacle et de commerce. La nuit, c'est un immense restaurant populaire où les Marrakchis se retrouvent.
-                    
-                    Les minarets de la Koutoubia dominent la place et servent de repère aux visiteurs. La vue depuis les terrasses des cafés sur la place est spectaculaire, surtout au coucher du soleil.
-                    """
-                case "Médina de Marrakech":
-                    return """
-                    La Médina de Marrakech, labyrinthe de ruelles et de souks !
-                    
-                    Fondée au 11ème siècle par les Almoravides, la médina de Marrakech est l'une des plus grandes et des plus anciennes du Maroc. Ses murailles roses, construites en pisé, s'étendent sur 19 kilomètres.
-                    
-                    Les souks de la médina sont organisés par corporation : souk des épices, souk des tapis, souk des bijoux, souk des babouches. Chaque souk a sa spécialité et ses artisans traditionnels.
-                    
-                    Anecdote : la médina abrite plus de 100 000 habitants et 40 000 artisans. C'est une ville dans la ville, avec ses propres règles et traditions.
-                    
-                    Les riads, maisons traditionnelles avec jardin intérieur, sont les joyaux cachés de la médina. Beaucoup ont été transformés en hôtels de charme.
-                    """
-                case "Koutoubia":
-                    return """
-                    La Koutoubia, joyau de l'architecture almohade !
-                    
-                    Construite au 12ème siècle par les Almoravides, cette mosquée est la plus grande de Marrakech. Son minaret de 77 mètres de haut est le modèle de tous les minarets marocains, notamment la Giralda de Séville.
-                    
-                    Le nom 'Koutoubia' vient de 'koutoub', les livres, car il y avait autrefois un marché de livres à proximité. La mosquée est un chef-d'œuvre de l'architecture islamique avec ses proportions parfaites.
-                    
-                    Anecdote : le minaret a servi de modèle pour la construction de la Giralda de Séville. Les architectes espagnols s'en sont inspirés lors de la construction de la cathédrale de Séville.
-                    
-                    La mosquée est entourée de jardins magnifiques, les jardins de la Koutoubia, qui offrent une vue imprenable sur le minaret. C'est un lieu de promenade prisé des Marrakchis.
-                    """
-                case "Palais Bahia":
-                    return """
-                    Le Palais Bahia, chef-d'œuvre de l'architecture marocaine !
-                    
-                    Construit à la fin du 19ème siècle par le grand vizir Si Moussa, ce palais était destiné à sa favorite, Bahia. L'architecture mélange styles arabo-andalou et marocain traditionnel.
-                    
-                    Le palais compte 160 pièces réparties autour de plusieurs cours et jardins. Les décors en stuc, les plafonds en cèdre sculpté et les zelliges témoignent du raffinement de l'artisanat marocain.
-                    
-                    Anecdote : le palais a été pillé après la mort de Si Moussa. Les meubles et objets précieux ont été dispersés, mais l'architecture et les décors sont restés intacts.
-                    
-                    Les jardins du palais, avec leurs orangers et leurs fontaines, offrent une oasis de fraîcheur au cœur de la médina. C'est un lieu de promenade paisible et contemplatif.
-                    """
-                case "Jardin Majorelle":
-                    return """
-                    Le Jardin Majorelle, oasis de verdure et d'art !
-                    
-                    Créé par le peintre français Jacques Majorelle dans les années 1920, ce jardin botanique est un chef-d'œuvre d'art et de nature. Le bleu Majorelle, couleur emblématique du jardin, a été créé spécialement pour ce lieu.
-                    
-                    Le jardin abrite plus de 300 espèces de plantes du monde entier, notamment des cactus, des bambous et des palmiers. L'architecture du jardin mélange styles art déco et oriental.
-                    
-                    Anecdote : le jardin a été sauvé de la destruction par Yves Saint Laurent et Pierre Bergé en 1980. Ils l'ont restauré et ouvert au public. Yves Saint Laurent y a même fait construire sa villa.
-                    
-                    Le musée berbère, installé dans l'ancien atelier de Majorelle, présente une collection exceptionnelle d'objets d'art berbère. C'est un lieu de découverte de la culture amazighe.
-                    """
-                case "Palais El Badi":
-                    return """
-                    Le Palais El Badi, ruines majestueuses d'un palais légendaire !
-                    
-                    Construit au 16ème siècle par le sultan Ahmed al-Mansour, ce palais était considéré comme l'un des plus beaux du monde. Son nom 'El Badi' signifie 'l'Incomparable' en arabe.
-                    
-                    Le palais comptait 360 pièces décorées d'or, d'onyx et de marbre. Il abritait des jardins immenses avec des bassins, des fontaines et des orangers. Aujourd'hui, seules les ruines témoignent de sa splendeur passée.
-                    
-                    Anecdote : le palais a été pillé par le sultan Moulay Ismail au 17ème siècle. Il a emporté tous les matériaux précieux pour construire sa capitale, Meknès.
-                    
-                    Les ruines du palais, avec leurs murs en pisé et leurs cours immenses, offrent une vue imprenable sur la médina. C'est un lieu de promenade romantique et contemplatif.
-                    """
-                case "Tombeaux Saadiens":
-                    return """
-                    Les Tombeaux Saadiens, chef-d'œuvre de l'art funéraire marocain !
-                    
-                    Ces mausolées, construits au 16ème siècle par les sultans saadiens, abritent les tombes de la dynastie saadienne. L'architecture et les décors témoignent du raffinement de l'art marocain de l'époque.
-                    
-                    Les tombeaux sont divisés en plusieurs salles : la salle des douze colonnes, la salle des trois niches, la salle de prière. Chaque salle est décorée de stucs, de zelliges et de bois sculpté.
-                    
-                    Anecdote : les tombeaux ont été murés pendant des siècles pour éviter le pillage. Ils n'ont été redécouverts qu'en 1917 par les autorités françaises.
-                    
-                    Le jardin des tombeaux, avec ses cyprès et ses orangers, offre une atmosphère paisible et recueillie. C'est un lieu de mémoire et de contemplation.
-                    """
-                case "Médersa Ben Youssef":
-                    return """
-                    La Médersa Ben Youssef, joyau de l'architecture islamique !
-                    
-                    Construite au 14ème siècle, cette école coranique est l'une des plus grandes et des plus belles du Maroc. Elle pouvait accueillir jusqu'à 900 étudiants qui logeaient dans 130 cellules.
-                    
-                    L'architecture de la médersa est un chef-d'œuvre de l'art islamique : cour centrale avec bassin, salle de prière avec mihrab, cellules des étudiants. Les décors en stuc, bois sculpté et zelliges sont d'une finesse exceptionnelle.
-                    
-                    Anecdote : la médersa a été restaurée dans les années 1950 par les autorités françaises. Elle est aujourd'hui un musée ouvert au public.
-                    
-                    La cour centrale de la médersa, avec son bassin et ses arcades sculptées, est un lieu de contemplation et de méditation. L'ambiance y est paisible et spirituelle.
-                    """
-                case "Souk de Marrakech":
-                    return """
-                    Le Souk de Marrakech, labyrinthe de commerce et d'artisanat !
-                    
-                    Les souks de Marrakech s'étendent sur plusieurs kilomètres dans la médina. Ils sont organisés par corporation : souk des épices, souk des tapis, souk des bijoux, souk des babouches, souk des métaux.
-                    
-                    Chaque souk a sa spécialité et ses artisans traditionnels. Les techniques de fabrication n'ont pas changé depuis des siècles : tapis tissés à la main, bijoux forgés, cuir tanné.
-                    
-                    Anecdote : les souks sont organisés en corporations depuis le Moyen Âge. Chaque corporation a ses règles, ses traditions et ses secrets de fabrication.
-                    
-                    L'art du marchandage est de rigueur dans les souks. C'est une tradition ancestrale qui fait partie de la culture marocaine. Les prix ne sont jamais fixes !
-                    """
-                case "Jardin de la Ménara":
-                    return """
-                    Le Jardin de la Ménara, oasis de verdure aux portes de Marrakech !
-                    
-                    Créé au 12ème siècle par les Almohades, ce jardin est un chef-d'œuvre d'ingénierie hydraulique. Le grand bassin central, alimenté par un système de canaux souterrains, irrigue tout le jardin.
-                    
-                    Le pavillon central, construit au 19ème siècle, offre une vue imprenable sur le bassin et les oliveraies. C'est un lieu de promenade prisé des Marrakchis, surtout au coucher du soleil.
-                    
-                    Anecdote : le bassin de la Ménara a une profondeur de 2 mètres et peut contenir 30 000 mètres cubes d'eau. Il sert de réservoir pour irriguer les oliveraies environnantes.
-                    
-                    Les oliveraies du jardin, avec leurs arbres centenaires, offrent une promenade paisible et ombragée. C'est un lieu de détente et de contemplation.
-                    """
-                default:
-                    return "Bienvenue à \(locationName) ! Découvrez l'histoire fascinante de ce lieu emblématique de Marrakech avec des anecdotes captivantes et des détails historiques précis."
-                }
-
-            default:
-                return "Bienvenue à \(locationName) ! Découvrez l'histoire fascinante de ce lieu emblématique de \(city.displayName) avec des anecdotes captivantes et des détails historiques précis."
-            }
-        }
-        
         private func getCityImageURL(for city: City) -> String {
             let cityImages = [
                 "paris": "https://images.unsplash.com/photo-1502602898536-47ad22581b52?w=800&h=600&fit=crop",
@@ -4224,10 +6957,17 @@ class GuidedToursViewModel: ObservableObject {
             
             return cityImages[city.rawValue] ?? "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=800&h=600&fit=crop"
         }
-        
         private func getBaseCoordinates(for city: City) -> (lat: Double, lng: Double) {
             // Coordonnées de base pour les villes non listées dans getRealCoordinates
             switch city {
+            case .seoul:
+                return (37.5665, 126.9780)
+            case .busan:
+                return (35.1796, 129.0756)
+            case .incheon:
+                return (37.4563, 126.7052)
+            case .daejeon:
+                return (36.3504, 127.3845)
             case .marseille:
                 return (43.2965, 5.3698) // Marseille
             case .toulouse:
@@ -4300,12 +7040,14 @@ class GuidedToursViewModel: ObservableObject {
                 return (51.2194, 4.4025) // Anvers
             case .ghent:
                 return (51.0500, 3.7303) // Gand
+            case .brussels:
+                return (50.8503, 4.3517) // Bruxelles
             case .charleroi:
                 return (50.4108, 4.4446) // Charleroi
             case .liege:
                 return (50.8503, 5.6889) // Liège
             case .bruges:
-                return (51.2093, 3.2247) // Bruges
+                return (51.2089, 3.2247) // Bruges (centre Markt)
             case .namur:
                 return (50.4669, 4.8675) // Namur
 

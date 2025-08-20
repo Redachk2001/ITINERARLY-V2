@@ -12,13 +12,17 @@ struct TourDetailView: View {
     var body: some View {
         NavigationView {
             ScrollView {
+                // Fond: même gradient animé que l'écran d'ouverture
+                AnimatedBackground()
+                    .ignoresSafeArea()
+                    .frame(height: 0) // inséré comme fond via background ci-dessous
                 VStack(spacing: 20) {
                     // Tour Header
                     VStack(alignment: .leading, spacing: 16) {
                         AsyncImage(url: URL(string: tour.imageURL ?? "")) { image in
                             image
                                 .resizable()
-                                .aspectRatio(contentMode: .fill)
+                                .scaledToFill()
                         } placeholder: {
                             Rectangle()
                                 .fill(LinearGradient(
@@ -32,7 +36,7 @@ struct TourDetailView: View {
                                         .foregroundColor(.white)
                                 )
                         }
-                        .frame(height: 200)
+                        .frame(height: ItinerarlyTheme.Sizes.tourDetailHeaderHeight)
                         .cornerRadius(16)
                         
                         VStack(alignment: .leading, spacing: 12) {
@@ -101,11 +105,12 @@ struct TourDetailView: View {
                     }
                     
                     // Audio Controls
-                    if !tour.stops.isEmpty {
+                    if !tour.stops.isEmpty && currentStopIndex < tour.stops.count {
                         AudioControlsCard(
                             currentStop: tour.stops[currentStopIndex],
                             isPlaying: audioService.isPlaying,
                             progress: audioService.currentProgress,
+                            totalDuration: audioService.totalDuration,
                             onPlayPause: {
                                 if audioService.isPlaying {
                                     audioService.stopSpeaking()
@@ -115,8 +120,16 @@ struct TourDetailView: View {
                             },
                             onStop: {
                                 audioService.stopSpeaking()
+                            },
+                            onForward: {
+                                let next = min(audioService.currentProgress + 0.15, 1.0)
+                                audioService.seekTo(progress: next)
                             }
                         )
+                    } else {
+                        Text("Aucun arrêt disponible")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                     
                     // Boutons d'action
@@ -307,9 +320,10 @@ struct TourDetailView: View {
                                 MapAnnotation(coordinate: stop.location.coordinate) {
                                     StopMapPin(
                                         stop: stop,
-                                        isSelected: currentStopIndex == stop.order - 1
+                                        isSelected: currentStopIndex == max(0, min(stopsToUse.count - 1, stop.order - 1))
                                     ) {
-                                        currentStopIndex = stop.order - 1
+                                        let target = stop.order - 1
+                                        currentStopIndex = max(0, min(stopsToUse.count - 1, target))
                                         showingMap = false
                                     }
                                 }
@@ -323,11 +337,12 @@ struct TourDetailView: View {
                                 ForEach(stopsToUse) { stop in
                                     TourStopDetailCard(
                                         stop: stop,
-                                        index: stop.order - 1,
-                                        isSelected: currentStopIndex == stop.order - 1,
+                                        index: max(0, min(stopsToUse.count - 1, stop.order - 1)),
+                                        isSelected: currentStopIndex == max(0, min(stopsToUse.count - 1, stop.order - 1)),
                                         isLast: stop.order == stopsToUse.count
                                     ) {
-                                        currentStopIndex = stop.order - 1
+                                        let target = stop.order - 1
+                                        currentStopIndex = max(0, min(stopsToUse.count - 1, target))
                                         audioService.speakText(stop.audioGuideText)
                                     }
                                 }
@@ -372,6 +387,7 @@ struct TourDetailView: View {
                 }
                 .padding()
             }
+            .background(AnimatedBackground().ignoresSafeArea())
             .navigationTitle("Tour guidé")
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarItems(
@@ -380,6 +396,7 @@ struct TourDetailView: View {
                     dismiss()
                 }
             )
+            .onAppear { setupMapRegion() }
         }
     }
     
@@ -526,8 +543,10 @@ struct AudioControlsCard: View {
     let currentStop: TourStop
     let isPlaying: Bool
     let progress: Double
+    let totalDuration: Double
     let onPlayPause: () -> Void
     let onStop: () -> Void
+    let onForward: () -> Void
     
     var body: some View {
         VStack(spacing: 16) {
@@ -545,17 +564,16 @@ struct AudioControlsCard: View {
                 Spacer()
             }
             
-            // Progress Bar
+            // Progress Bar dynamique
             VStack(spacing: 8) {
                 ProgressView(value: progress)
                     .progressViewStyle(LinearProgressViewStyle(tint: .purple))
-                
                 HStack {
-                    Text("00:00")
+                    Text(formattedTime(progress * totalDuration))
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Spacer()
-                    Text("02:30")
+                    Text(formattedTime(totalDuration))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -575,7 +593,7 @@ struct AudioControlsCard: View {
                         .foregroundColor(.purple)
                 }
                 
-                Button(action: {}) {
+                Button(action: onForward) {
                     Image(systemName: "forward.end.fill")
                         .font(.title2)
                         .foregroundColor(.secondary)
@@ -585,6 +603,14 @@ struct AudioControlsCard: View {
         .padding()
         .background(Color.purple.opacity(0.1))
         .cornerRadius(16)
+    }
+
+    private func formattedTime(_ seconds: Double) -> String {
+        guard seconds.isFinite && !seconds.isNaN else { return "--:--" }
+        let s = Int(seconds)
+        let m = s / 60
+        let r = s % 60
+        return String(format: "%02d:%02d", m, r)
     }
 }
 

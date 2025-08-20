@@ -9,6 +9,7 @@ struct AdventurerFilter {
     var radius: Double = 5.0 // km
     var availableTime: TimeInterval = 3600 // 1 heure par défaut
     var excludedCategory: LocationCategory?
+    var transportMode: TransportMode = .walking
 }
 
 struct AdventurerResult {
@@ -43,7 +44,10 @@ class AdventurerViewModel: ObservableObject {
     // MARK: - Catégories disponibles pour exclusion
     let availableCategories: [LocationCategory] = [
         .restaurant, .cafe, .museum, .culture, .sport, 
-        .shopping, .nature, .bar, .entertainment, .aquarium, .zoo
+        .shopping, .nature, .bar, .entertainment, .aquarium, .zoo,
+        .bowling, .iceRink, .swimmingPool, .climbingGym, .escapeRoom,
+        .laserTag, .miniGolf, .paintball, .karting, .trampolinePark,
+        .waterPark, .adventurePark
     ]
     
     // MARK: - Temps disponibles (en minutes)
@@ -67,8 +71,18 @@ class AdventurerViewModel: ObservableObject {
             let userLocation = try await getUserLocation()
             self.userLocation = userLocation
             
-            // 2. Rechercher des lieux insolites
-            let allPlaces = try await searchUnusualPlaces(near: userLocation)
+            // 2. Rechercher des lieux selon la méthode
+            let allPlaces: [Location]
+            
+            if !filter.address.isEmpty {
+                // Utiliser la recherche automatique avec adresse
+                print("🎯 Utilisation de la recherche automatique avec adresse: \(filter.address)")
+                allPlaces = try await searchPlacesFromAddress(filter.address)
+            } else {
+                // Utiliser la recherche normale
+                print("📍 Utilisation de la recherche normale avec géolocalisation")
+                allPlaces = try await searchUnusualPlaces(near: userLocation)
+            }
             
             // 3. Filtrer selon les contraintes
             let filteredPlaces = filterPlaces(allPlaces, userLocation: userLocation)
@@ -197,6 +211,48 @@ class AdventurerViewModel: ObservableObject {
         }
         
         return allPlaces
+    }
+    
+    // MARK: - Recherche automatique avec adresse
+    func searchPlacesFromAddress(_ address: String) async throws -> [Location] {
+        print("🎯 Recherche automatique depuis l'adresse: \(address)")
+        
+        let searchService = UniversalPlaceSearchService()
+        var selectedPlaces: [Location] = []
+        
+        // Catégories d'aventure et de loisirs
+        let adventureCategories: [LocationCategory] = [
+            .bowling, .iceRink, .swimmingPool, .climbingGym, .escapeRoom,
+            .laserTag, .miniGolf, .paintball, .karting, .trampolinePark,
+            .waterPark, .adventurePark, .entertainment, .sport
+        ]
+        
+        for category in adventureCategories {
+            // Exclure la catégorie si spécifiée
+            if let excludedCategory = filter.excludedCategory, category == excludedCategory {
+                continue
+            }
+            
+            print("🔍 Recherche automatique pour \(category.displayName)")
+            
+            let place = await withCheckedContinuation { continuation in
+                searchService.searchAndSelectBestPlace(
+                    category: category,
+                    from: address
+                ) { place in
+                    continuation.resume(returning: place)
+                }
+            }
+            
+            if let place = place {
+                selectedPlaces.append(place)
+                print("✅ Lieu sélectionné pour \(category.displayName): \(place.name)")
+            } else {
+                print("❌ Aucun lieu trouvé pour \(category.displayName)")
+            }
+        }
+        
+        return selectedPlaces
     }
     
     // MARK: - Filtrer les lieux
@@ -405,6 +461,10 @@ class AdventurerViewModel: ObservableObject {
     
     func updateExcludedCategory(_ category: LocationCategory?) {
         filter.excludedCategory = category
+    }
+    
+    func updateTransportMode(_ mode: TransportMode) {
+        filter.transportMode = mode
     }
     
     func clearResult() {

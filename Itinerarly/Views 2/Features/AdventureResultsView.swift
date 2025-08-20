@@ -505,6 +505,17 @@ struct AdventureLocationCard: View {
                     .foregroundColor(.blue)
                 }
                 
+                Button(action: {
+                    openInTikTok(query: location.name)
+                }) {
+                    HStack {
+                        Image(systemName: "video.fill")
+                        Text("TikTok")
+                    }
+                    .font(.caption)
+                    .foregroundColor(.pink)
+                }
+                
                 Spacer()
                 
                 if let duration = location.recommendedDuration {
@@ -522,12 +533,36 @@ struct AdventureLocationCard: View {
         .cornerRadius(12)
         .shadow(color: .black.opacity(0.1), radius: 5, x: 0, y: 2)
     }
+
+    private func openInTikTok(query: String) {
+        guard !query.isEmpty else { return }
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        if let appURL = URL(string: "tiktok://search?q=\(encoded)"), UIApplication.shared.canOpenURL(appURL) {
+            UIApplication.shared.open(appURL)
+            return
+        }
+        if let webURL = URL(string: "https://www.tiktok.com/search?q=\(encoded)") {
+            UIApplication.shared.open(webURL)
+        }
+    }
 }
 
 // MARK: - Extension pour les fonctions d'action
 extension AdventureResultsView {
     private func startNavigation() {
         showingNavigation = true
+    }
+    
+    private func openInTikTok(query: String) {
+        guard !query.isEmpty else { return }
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        if let appURL = URL(string: "tiktok://search?q=\(encoded)"), UIApplication.shared.canOpenURL(appURL) {
+            UIApplication.shared.open(appURL)
+            return
+        }
+        if let webURL = URL(string: "https://www.tiktok.com/search?q=\(encoded)") {
+            UIApplication.shared.open(webURL)
+        }
     }
     
     private func showRoutePreview() {

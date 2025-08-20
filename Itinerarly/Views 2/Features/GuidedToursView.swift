@@ -13,23 +13,29 @@ struct GuidedToursView: View {
     @State private var selectedTour: GuidedTour?
     @State private var transportMode: TransportMode = .walking
     @State private var selectedCountry: String = "France"
-    @State private var filteredCities: [City] = City.allCases.filter { $0.country == "France" }
+    @State private var filteredCities: [City] = []
     
     // Location Selection
     @State private var useCurrentLocation = false
     @State private var startAddress = ""
     @State private var isGettingAddress = false
+    @State private var showingMapPicker = false
+    @State private var wantsToUseCurrentLocation = false
     @State private var geocodedLocation: CLLocation?
     @State private var confirmedAddress = ""
     @State private var isAddressConfirmed = false
     @State private var addressTimer: Timer?
     
+    // Location Alert
+    @State private var showingLocationAlert = false
+    @State private var locationAlertMessage = ""
+    
     var body: some View {
         NavigationView {
             ScrollView {
-                VStack(spacing: 24) {
+                VStack(spacing: 20) {
                     // Header - Design épuré
-                    VStack(spacing: ItinerarlyTheme.Spacing.md) {
+                    VStack(spacing: ItinerarlyTheme.Spacing.sm) {
                         // Titre en haut à gauche
                         HStack {
                             TranslatedText("Tours guidés")
@@ -45,7 +51,7 @@ struct GuidedToursView: View {
                             .padding(.top, ItinerarlyTheme.Spacing.sm)
                         
                         // Description centrée
-                        Text("Découvrez 80+ villes européennes avec des tours guidés générés par IA")
+                        Text("Découvrez 80+ villes à travers le monde avec des tours guidés générés par IA")
                             .font(ItinerarlyTheme.Typography.subheadline)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
@@ -76,29 +82,16 @@ struct GuidedToursView: View {
                         .padding(.top, ItinerarlyTheme.Spacing.xs)
                     }
                     .padding(.top)
-                    
-                    // Info sur les nouvelles fonctionnalités
-                    VStack(spacing: ItinerarlyTheme.Spacing.md) {
-                        HStack {
-                            Image(systemName: "sparkles")
-                                .foregroundColor(ItinerarlyTheme.ModeColors.guidedTours)
-                            Text("Nouveau : Tours guidés générés par IA")
-                                .font(ItinerarlyTheme.Typography.subheadline)
-                                .fontWeight(.semibold)
-                                .foregroundColor(ItinerarlyTheme.ModeColors.guidedTours)
-                        }
-                        
-                        Text("L'IA crée des itinéraires optimisés avec guides audio détaillés en français pour chaque ville")
-                            .font(ItinerarlyTheme.Typography.caption1)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
+                    .onAppear {
+                        // Initialiser la short‑list de villes dès l'apparition
+                        filteredCities = getCitiesForCountry(selectedCountry)
+                        if let first = filteredCities.first { selectedCity = first }
                     }
-                    .padding(ItinerarlyTheme.Spacing.lg)
-                    .background(ItinerarlyTheme.ModeColors.guidedTours.opacity(0.1))
-                    .cornerRadius(ItinerarlyTheme.CornerRadius.md)
+                    
+                    // Section info supprimée
                     
                     // Location Selection Card
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 12) {
                         Label("Point de départ", systemImage: "mappin.and.ellipse")
                             .font(.headline)
                             .foregroundColor(.primary)
@@ -157,30 +150,22 @@ struct GuidedToursView: View {
                                         // Mettre l'adresse formatée dans le champ
                                         let formattedAddress = formatAddressFromMapItem(mapItem)
                                         startAddress = formattedAddress
-                                        
-                                        // Ne pas confirmer automatiquement, attendre la validation manuelle
+                                        // Valider automatiquement l'adresse sélectionnée
+                                        confirmedAddress = formattedAddress
+                                        isAddressConfirmed = true
                                     }
                                 )
-                                
-                                // Bouton de validation de l'adresse
-                                if !startAddress.isEmpty && !isAddressConfirmed {
-                                    Button(action: {
-                                        // Confirmer l'adresse manuellement
-                                        confirmedAddress = startAddress
-                                                isAddressConfirmed = true
-                                        geocodeAddress(startAddress)
-                                    }) {
-                                        HStack {
-                                            Image(systemName: "checkmark.circle.fill")
-                                            Text("Valider cette adresse")
-                                        }
-                                        .font(.caption)
-                                        .foregroundColor(.white)
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 6)
-                                        .background(Color.green)
-                                        .cornerRadius(8)
+                                .simultaneousGesture(TapGesture().onEnded {
+                                    if FeatureFlags.enableUseCurrentLocation && startAddress.trimmingCharacters(in: .whitespaces).isEmpty {
+                                        getAddressFromCurrentLocation()
                                     }
+                                })
+                                // Validation manuelle supprimée pour un flux plus fluide
+                            }
+                            .overlay(alignment: .trailing) {
+                                Button(action: { showingMapPicker = true }) {
+                                    Image(systemName: "mappin.and.ellipse")
+                                        .padding(8)
                                 }
                             }
                             .onChange(of: startAddress) { oldValue, newValue in
@@ -193,6 +178,7 @@ struct GuidedToursView: View {
                                     }
                                 }
                                 
+                                if FeatureFlags.enableUseCurrentLocation {
                                 Button(action: {
                                     getAddressFromCurrentLocation()
                                 }) {
@@ -206,54 +192,96 @@ struct GuidedToursView: View {
                                         Text(isGettingAddress ? "Récupération de l'adresse..." : "Utiliser ma position")
                                     }
                                     .font(.caption)
-                                    .foregroundColor(isGettingAddress ? .gray : .orange)
+                                        .foregroundColor(isGettingAddress ? .gray : ItinerarlyTheme.ModeColors.guidedTours)
                                 }
                                 .disabled(isGettingAddress)
+                                }
+                                
+                                // Afficher le statut GPS si on utilise la position actuelle
+                                if FeatureFlags.enableUseCurrentLocation && (useCurrentLocation || isGettingAddress) {
+                                    HStack {
+                                        Image(systemName: locationManager.authorizationStatus == .authorizedWhenInUse || locationManager.authorizationStatus == .authorizedAlways ? "location.fill" : "location.slash")
+                                            .foregroundColor(locationManager.authorizationStatus == .authorizedWhenInUse || locationManager.authorizationStatus == .authorizedAlways ? .green : .red)
+                                        Text(locationStatusText)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .padding(.top, 4)
+                                }
                         }
                     }
                     .padding()
-                    .background(Color(.systemGray6))
+                    .background(Color(.systemBackground))
                     .cornerRadius(16)
                     
 
                     
-                    // City Selector
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("Ou choisissez votre destination")
+                    // City Selector (menus déroulants stylés)
+                    VStack(alignment: .leading, spacing: ItinerarlyTheme.Spacing.sm) {
+                        Text("Destination")
                             .font(.headline)
                             .foregroundColor(.primary)
                         
-                        // Sélecteur de pays
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: ItinerarlyTheme.Spacing.sm) {
+                        // Menu Pays
+                        Menu {
                                 ForEach(getUniqueCountries(), id: \.self) { country in
-                                    CountryFilterButton(
-                                        country: country,
-                                        isSelected: selectedCountry == country
-                                    ) {
+                                Button(country) {
                                         selectedCountry = country
                                         filteredCities = getCitiesForCountry(country)
+                                    if let first = filteredCities.first {
+                                        selectedCity = first
+                                        loadToursWithLocation(for: first)
                                     }
                                 }
                             }
-                            .padding(.horizontal)
+                        } label: {
+                            HStack {
+                                Text(selectedCountry)
+                                    .font(.body)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(Color(.systemBackground))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color(.systemGray4), lineWidth: 1)
+                            )
+                            .cornerRadius(12)
                         }
-                        
-                        // Sélecteur de villes
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            LazyHStack(spacing: 16) {
+
+                        // Menu Ville
+                        Menu {
                                 ForEach(filteredCities, id: \.self) { city in
-                                    CitySelectionCard(
-                                        city: city,
-                                        isSelected: selectedCity == city
-                                    ) {
+                                Button(city.displayName) {
                                         selectedCity = city
                                         loadToursWithLocation(for: city)
                                     }
                                 }
+                        } label: {
+                            HStack {
+                                Text(selectedCity.displayName)
+                                    .font(.body)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
                             }
-                            .padding(.horizontal)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(Color(.systemBackground))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color(.systemGray4), lineWidth: 1)
+                            )
+                            .cornerRadius(12)
                         }
+                        .tint(ItinerarlyTheme.ModeColors.guidedTours)
                     }
                     
                     // Mode de transport
@@ -262,22 +290,18 @@ struct GuidedToursView: View {
                             .font(.headline)
                             .foregroundColor(.primary)
                         
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: ItinerarlyTheme.Spacing.sm) {
+                        HStack(spacing: 10) {
                                 ForEach(TransportMode.allCases, id: \.self) { mode in
-                                    TransportModeButton(
+                                GTTransportModeButton(
                                         mode: mode,
                                         isSelected: transportMode == mode
                                     ) {
                                         transportMode = mode
-                                        // Recharger les tours avec le nouveau mode de transport
                                         if !viewModel.tours.isEmpty {
                                             loadToursWithLocation(for: selectedCity)
                                         }
                                     }
                                 }
-                            }
-                            .padding(.horizontal, 20)
                         }
                     }
                     
@@ -286,44 +310,32 @@ struct GuidedToursView: View {
                         Button(action: {
                             loadRandomTourWithLocation(for: selectedCity)
                         }) {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack {
-                                        Text("🎲")
-                                            .font(.title2)
-                                        
-                                        Text("Mode Surprise - \(selectedCity.displayName)")
-                                            .font(.headline)
-                                            .fontWeight(.bold)
-                                        
-                                        Spacer()
-                                        
-                                        Image(systemName: "arrow.right.circle.fill")
-                                            .font(.title3)
-                                    }
-                                    .foregroundColor(.white)
+                            HStack(spacing: ItinerarlyTheme.Spacing.sm) {
+                                Image(systemName: "dice.fill")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundColor(ItinerarlyTheme.ModeColors.guidedTours)
+                                
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Mode Surprise - \(selectedCity.displayName)")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundColor(.primary)
                                     
-                                    Text("Laissez-nous choisir un tour aléatoire pour vous dans cette ville !")
-                                        .font(.subheadline)
-                                        .foregroundColor(.white.opacity(0.9))
-                                        .multilineTextAlignment(.leading)
+                                    Text("Tour aléatoire pour cette ville")
+                                        .font(.system(size: 12, weight: .regular))
+                                        .foregroundColor(.secondary)
                                 }
                                 
                                 Spacer()
+                                
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(.secondary)
                             }
-                            .padding()
-                            .background(
-                                LinearGradient(
-                                    gradient: Gradient(colors: [
-                                        Color.orange.opacity(0.8),
-                                        Color.red.opacity(0.8)
-                                    ]),
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .cornerRadius(16)
-                            .shadow(color: .orange.opacity(0.3), radius: 10, x: 0, y: 5)
+                            .padding(ItinerarlyTheme.Spacing.md)
+                            .frame(height: 48)
+                            .background(Color(.systemBackground))
+                            .cornerRadius(ItinerarlyTheme.CornerRadius.sm)
+                            .shadow(color: .black.opacity(0.05), radius: 3, x: 0, y: 1)
                         }
                         .buttonStyle(PlainButtonStyle())
                     }
@@ -447,50 +459,113 @@ struct GuidedToursView: View {
                 }
             }
         }
+        .sheet(isPresented: $showingMapPicker) {
+            MapPickerView(
+                cityName: selectedCity.displayName,
+                initialCoordinate: geocodedLocation?.coordinate,
+                onPicked: { loc, address in
+                    self.startAddress = address
+                    self.confirmedAddress = address
+                    self.isAddressConfirmed = true
+                    self.geocodedLocation = loc
+                    loadToursWithLocation(for: selectedCity)
+                }
+            )
+        }
         .onAppear {
             if viewModel.tours.isEmpty {
                 loadToursWithLocation(for: selectedCity)
             }
+        }
+        .onReceive(locationManager.$location) { location in
+            guard FeatureFlags.enableUseCurrentLocation else { return }
+            // Observer pour le bouton "Utiliser ma position"
+            if let location = location, isGettingAddress {
+                // Dès qu'on a une position et qu'on attend, on l'utilise
+                locationManager.reverseGeocode(location) { result in
+                    DispatchQueue.main.async {
+                        self.isGettingAddress = false
+                        self.locationManager.stopUpdatingLocation()
+                        
+                        switch result {
+                        case .success(let address):
+                            self.startAddress = address
+                            self.confirmedAddress = address
+                            self.isAddressConfirmed = true
+                            self.geocodedLocation = location
+                            self.useCurrentLocation = true
+                            // Recharger les tours avec la nouvelle position
+                            self.loadToursWithLocation(for: self.selectedCity)
+                        case .failure(_):
+                            // Utiliser les coordonnées en cas d'échec
+                            let coordString = String(format: "%.6f, %.6f", location.coordinate.latitude, location.coordinate.longitude)
+                            self.startAddress = coordString
+                            self.confirmedAddress = coordString
+                            self.isAddressConfirmed = true
+                            self.geocodedLocation = location
+                            self.useCurrentLocation = true
+                            // Recharger les tours avec la nouvelle position
+                            self.loadToursWithLocation(for: self.selectedCity)
+                        }
+                    }
+                }
+            }
+        }
+        .onChange(of: locationManager.authorizationStatus) { _ in }
+        .alert("Autorisation de localisation", isPresented: $showingLocationAlert) {
+            Button("Annuler") { }
+            Button("Ouvrir Réglages") {
+                if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(settingsUrl)
+                }
+            }
+            Button("Réessayer") {
+                getAddressFromCurrentLocation()
+            }
+        } message: {
+            Text(locationAlertMessage)
         }
     }
     
     // MARK: - Location Methods
     
     private func getAddressFromCurrentLocation() {
+        guard FeatureFlags.enableUseCurrentLocation else { return }
         isGettingAddress = true
+        wantsToUseCurrentLocation = true
         
-        guard let location = locationManager.location else {
-            isGettingAddress = false
-            return
-        }
+        // Demander/rafraîchir l'autorisation sans vérifs bloquantes
+        locationManager.requestWhenInUseAuthorization()
         
-        let geocoder = CLGeocoder()
-        geocoder.reverseGeocodeLocation(location) { placemarks, error in
-            DispatchQueue.main.async {
-                isGettingAddress = false
-                
-                if let error = error {
-                    print("Erreur de géocodage: \(error.localizedDescription)")
-                    return
-                }
-                
-                if let placemark = placemarks?.first {
-                    let address = [
-                        placemark.thoroughfare,
-                        placemark.subThoroughfare,
-                        placemark.locality,
-                        placemark.postalCode,
-                        placemark.country
-                    ].compactMap { $0 }.joined(separator: ", ")
-                    
-                    startAddress = address
-                    confirmedAddress = address
-                    isAddressConfirmed = true
-                    geocodedLocation = location
-                    useCurrentLocation = true
-                    
-                    // Recharger les tours avec la nouvelle position et l'adresse géocodée
-                    loadToursWithLocation(for: selectedCity)
+        // Démarrer la récupération de position immédiatement
+        locationManager.startUpdatingLocation()
+        
+        // Timeout de sécurité
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15.0) {
+            if self.isGettingAddress {
+                self.isGettingAddress = false
+                self.wantsToUseCurrentLocation = false
+                self.locationManager.stopUpdatingLocation()
+                if let last = self.locationManager.location {
+                    self.locationManager.reverseGeocode(last) { result in
+                        DispatchQueue.main.async {
+                            switch result {
+                            case .success(let address):
+                                self.startAddress = address
+                                self.confirmedAddress = address
+                                self.isAddressConfirmed = true
+                                self.geocodedLocation = last
+                            case .failure(_):
+                                let coordString = String(format: "%.6f, %.6f", last.coordinate.latitude, last.coordinate.longitude)
+                                self.startAddress = coordString
+                                self.confirmedAddress = coordString
+                                self.isAddressConfirmed = true
+                                self.geocodedLocation = last
+                            }
+                        }
+                    }
+                } else {
+                    self.showLocationError("Impossible d'obtenir votre position. Vérifiez que la localisation est activée et que vous êtes à l'extérieur.")
                 }
             }
         }
@@ -636,6 +711,35 @@ struct GuidedToursView: View {
         // Sinon, retourner le tour original
         return tour
     }
+    
+    private func showLocationError(_ message: String) {
+        locationAlertMessage = message
+        showingLocationAlert = true
+    }
+    
+    private var locationStatusText: String {
+        switch locationManager.authorizationStatus {
+        case .notDetermined:
+            return "Appuyez pour autoriser la localisation"
+        case .denied, .restricted:
+            return "Ouvrir Réglages → Confidentialité → Localisation"
+        case .authorizedWhenInUse, .authorizedAlways:
+            if let location = locationManager.location {
+                let accuracy = location.horizontalAccuracy
+                if accuracy < 5 {
+                    return "🟢 GPS haute précision (\(Int(accuracy))m)"
+                } else if accuracy < 20 {
+                    return "🟡 GPS précis (\(Int(accuracy))m)"
+                } else {
+                    return "🟠 GPS approximatif (\(Int(accuracy))m)"
+                }
+            } else {
+                return "🔍 Recherche du signal GPS..."
+            }
+        @unknown default:
+            return "❓ Statut GPS inconnu"
+        }
+    }
 }
 
 struct CitySelectionCard: View {
@@ -672,94 +776,332 @@ struct TourCard: View {
     let onDetailsTap: () -> Void
     let onRouteTap: () -> Void
     
-    // Fonction pour obtenir l'image représentative selon le titre du tour
-    private func getRepresentativeImage(for tour: GuidedTour) -> String {
-        let title = tour.title.lowercased()
-        
-        // Images spécifiques pour Paris
-        if tour.city == .paris {
-            if title.contains("historique") || title.contains("romantique") {
-                return "https://images.unsplash.com/photo-1502602898536-47ad22581b52?w=400&h=300&fit=crop"
-            } else if title.contains("art") || title.contains("culture") {
-                return "https://images.unsplash.com/photo-1541961017774-22349e4a1262?w=400&h=300&fit=crop"
-            } else if title.contains("gastronomie") || title.contains("cuisine") {
-                return "https://images.unsplash.com/photo-1559339352-11d035aa65de?w=400&h=300&fit=crop"
-            } else if title.contains("mode") || title.contains("shopping") {
-                return "https://images.unsplash.com/photo-1441986300917-64674bd600d8?w=400&h=300&fit=crop"
-            } else if title.contains("secrets") || title.contains("caché") {
-                return "https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=400&h=300&fit=crop"
-            } else if title.contains("littéraire") || title.contains("écrivain") {
-                return "https://images.unsplash.com/photo-1481627834876-b7833e8f5570?w=400&h=300&fit=crop"
-            } else if title.contains("impressionniste") || title.contains("monet") {
-                return "https://images.unsplash.com/photo-1578662996442-48f60103fc96?w=400&h=300&fit=crop"
-            } else if title.contains("révolution") || title.contains("historique") {
-                return "https://images.unsplash.com/photo-1502602898536-47ad22581b52?w=400&h=300&fit=crop"
-            } else if title.contains("champs") || title.contains("elysées") {
-                return "https://images.unsplash.com/photo-1499856871958-5b9627545d1a?w=400&h=300&fit=crop"
-            } else if title.contains("marais") || title.contains("médiéval") {
-                return "https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=400&h=300&fit=crop"
-            } else if title.contains("montmartre") || title.contains("artiste") {
-                return "https://images.unsplash.com/photo-1511739001486-6bfe10ce785f?w=400&h=300&fit=crop"
-            } else if title.contains("latin") || title.contains("université") {
-                return "https://images.unsplash.com/photo-1481627834876-b7833e8f5570?w=400&h=300&fit=crop"
-            } else if title.contains("seine") || title.contains("fluvial") {
-                return "https://images.unsplash.com/photo-1502602898536-47ad22581b52?w=400&h=300&fit=crop"
-            } else if title.contains("architecture") || title.contains("haussman") {
-                return "https://images.unsplash.com/photo-1499856871958-5b9627545d1a?w=400&h=300&fit=crop"
-            } else if title.contains("jardin") || title.contains("nature") {
-                return "https://images.unsplash.com/photo-1578662996442-48f60103fc96?w=400&h=300&fit=crop"
-            } else if title.contains("nuit") || title.contains("illuminé") {
-                return "https://images.unsplash.com/photo-1502602898536-47ad22581b52?w=400&h=300&fit=crop"
-            } else {
-                // Image par défaut pour Paris
-                return "https://images.unsplash.com/photo-1502602898536-47ad22581b52?w=400&h=300&fit=crop"
-            }
-        }
-        
-        // Images pour d'autres villes
+    // Fonction supprimée - on utilise maintenant les images fixes de Paris
+    
+    // Utiliser directement les images de Paris (sans API)
+    private func getPreferredImageURL(for tour: GuidedTour) -> String {
+        return getFallbackImageURL(for: tour)
+    }
+    
+    // Images fixes par ville (sans API) - Rotation pour éviter les doublons
+    private func getFallbackImageURL(for tour: GuidedTour) -> String {
         switch tour.city {
-        case .lyon:
-            return "https://images.unsplash.com/photo-1578662996442-48f60103fc96?w=400&h=300&fit=crop"
+        case .paris:
+            let parisImages = [
+                "https://cdn.pixabay.com/photo/2022/09/02/13/45/paris-7427636_1280.jpg",
+                "https://cdn.pixabay.com/photo/2021/11/17/15/07/paris-6803796_1280.jpg",
+                "https://cdn.pixabay.com/photo/2024/09/22/09/39/pantheon-paris-9065570_1280.jpg",
+                "https://cdn.pixabay.com/photo/2021/08/14/01/58/museum-6544420_1280.jpg"
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: parisImages.count)
+            return parisImages[index]
+            
         case .marseille:
-            return "https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=400&h=300&fit=crop"
+            let marseilleImages = [
+                "https://cdn.pixabay.com/photo/2022/08/02/08/39/church-7359849_1280.jpg",
+                "https://cdn.pixabay.com/photo/2019/11/10/13/13/marseille-4615791_1280.jpg",
+                "https://cdn.pixabay.com/photo/2017/01/14/23/51/soldiers-1980666_1280.jpg",
+                "https://cdn.pixabay.com/photo/2015/10/23/22/32/marseille-1003822_1280.jpg"
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: marseilleImages.count)
+            return marseilleImages[index]
+            
         case .nice:
-            return "https://images.unsplash.com/photo-1499856871958-5b9627545d1a?w=400&h=300&fit=crop"
+            let niceImages = [
+                "https://cdn.pixabay.com/photo/2018/03/03/09/46/travel-3195287_1280.jpg",
+                "https://cdn.pixabay.com/photo/2019/10/01/20/31/nice-4519328_1280.jpg",
+                "https://cdn.pixabay.com/photo/2016/11/04/10/23/nice-1797345_1280.jpg"
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: niceImages.count)
+            return niceImages[index]
+            
+        case .lyon:
+            let lyonImages = [
+                "https://cdn.pixabay.com/photo/2018/08/11/12/57/lyon-3598618_1280.jpg",
+                "https://cdn.pixabay.com/photo/2015/10/25/15/26/lyon-1005953_1280.jpg",
+                "https://cdn.pixabay.com/photo/2015/09/16/14/46/lyon-942770_1280.jpg",
+                "https://cdn.pixabay.com/photo/2020/02/27/08/05/city-4883769_1280.jpg"
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: lyonImages.count)
+            return lyonImages[index]
+            
         case .bordeaux:
-            return "https://images.unsplash.com/photo-1481627834876-b7833e8f5570?w=400&h=300&fit=crop"
-        case .strasbourg:
-            return "https://images.unsplash.com/photo-1502602898536-47ad22581b52?w=400&h=300&fit=crop"
+            let bordeauxImages = [
+                "https://cdn.pixabay.com/photo/2022/05/04/09/13/bordeaux-7173548_1280.jpg",
+                "https://cdn.pixabay.com/photo/2023/10/03/09/59/bridge-8291058_1280.jpg",
+                "https://cdn.pixabay.com/photo/2018/12/15/14/43/bordeaux-3876988_1280.jpg",
+                "https://cdn.pixabay.com/photo/2017/03/17/10/42/grand-2151219_1280.jpg"
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: bordeauxImages.count)
+            return bordeauxImages[index]
+            
+        case .berlin:
+            let berlinImages = [
+                "https://cdn.pixabay.com/photo/2018/12/01/00/10/blue-hour-3848856_1280.jpg",
+                "https://cdn.pixabay.com/photo/2019/09/11/11/39/city-4468570_1280.jpg",
+                "https://cdn.pixabay.com/photo/2022/01/28/20/38/road-6975808_1280.jpg"
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: berlinImages.count)
+            return berlinImages[index]
+            
         case .brussels:
-            return "https://images.unsplash.com/photo-1559339352-11d035aa65de?w=400&h=300&fit=crop"
+            let brusselsImages = [
+                "https://cdn.pixabay.com/photo/2016/07/27/20/58/brussels-1546290_1280.jpg",
+                "https://cdn.pixabay.com/photo/2016/01/13/17/02/belgium-1138448_1280.jpg",
+                "https://cdn.pixabay.com/photo/2014/11/06/21/13/brussels-519965_1280.jpg",
+                "https://cdn.pixabay.com/photo/2018/08/10/19/10/royal-palace-of-brussels-3597435_1280.jpg"
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: brusselsImages.count)
+            return brusselsImages[index]
+            
+        case .bruges:
+            let brugesImages = [
+                "https://cdn.pixabay.com/photo/2020/03/25/09/30/belgium-4966646_1280.jpg",
+                "https://cdn.pixabay.com/photo/2017/03/04/10/12/belgian-2115765_1280.jpg",
+                "https://cdn.pixabay.com/photo/2018/08/19/12/20/brugge-3616516_1280.jpg"
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: brugesImages.count)
+            return brugesImages[index]
+            
+        case .barcelona:
+            let barcelonaImages = [
+                "https://cdn.pixabay.com/photo/2020/05/18/22/17/travel-5188598_1280.jpg",
+                "https://cdn.pixabay.com/photo/2021/06/28/13/00/buildings-6371608_1280.jpg",
+                "https://cdn.pixabay.com/photo/2013/09/18/16/52/barcelona-183504_1280.jpg",
+                "https://cdn.pixabay.com/photo/2020/03/14/09/31/barcelona-4930104_1280.jpg"
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: barcelonaImages.count)
+            return barcelonaImages[index]
+            
+        case .madrid:
+            let madridImages = [
+                "https://cdn.pixabay.com/photo/2019/01/24/09/38/madrid-3952068_1280.jpg",
+                "https://cdn.pixabay.com/photo/2017/10/19/13/52/park-2867683_1280.jpg",
+                "https://cdn.pixabay.com/photo/2014/04/19/12/40/madrid-327979_1280.jpg",
+                "https://cdn.pixabay.com/photo/2017/06/08/16/43/madrid-2384099_1280.jpg"
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: madridImages.count)
+            return madridImages[index]
+            
+        case .newYork:
+            let newYorkImages = [
+                "https://cdn.pixabay.com/photo/2015/03/11/12/31/buildings-668616_1280.jpg",
+                "https://cdn.pixabay.com/photo/2016/08/13/03/01/new-york-1590176_1280.jpg"
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: newYorkImages.count)
+            return newYorkImages[index]
+            
+        case .rome:
+            let romeImages = [
+                "https://cdn.pixabay.com/photo/2020/05/17/12/56/rome-5181486_1280.jpg",
+                "https://cdn.pixabay.com/photo/2017/05/30/18/06/rome-2357704_1280.jpg",
+                "https://cdn.pixabay.com/photo/2015/09/01/16/27/rome-917190_1280.jpg",
+                "https://cdn.pixabay.com/photo/2014/10/11/15/29/ancient-rome-484705_1280.jpg"
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: romeImages.count)
+            return romeImages[index]
+            
+        case .milan:
+            let milanImages = [
+                "https://cdn.pixabay.com/photo/2017/06/24/00/54/milan-cathedral-2436458_1280.jpg",
+                "https://cdn.pixabay.com/photo/2021/07/25/09/47/italy-6491421_1280.jpg",
+                "https://cdn.pixabay.com/photo/2019/08/31/18/36/tram-4443797_1280.jpg"
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: milanImages.count)
+            return milanImages[index]
+            
         case .luxembourg:
-            return "https://images.unsplash.com/photo-1541961017774-22349e4a1262?w=400&h=300&fit=crop"
+            let luxembourgImages = [
+                "https://cdn.pixabay.com/photo/2016/01/27/15/29/luxembourg-1164656_1280.jpg",
+                "https://cdn.pixabay.com/photo/2016/01/27/15/29/luxembourg-1164664_1280.jpg",
+                "https://cdn.pixabay.com/photo/2017/08/18/18/57/luxembourg-2656040_1280.jpg",
+                "https://cdn.pixabay.com/photo/2022/03/01/13/41/travel-7041341_1280.jpg"
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: luxembourgImages.count)
+            return luxembourgImages[index]
+            
+        case .casablanca:
+            let casablancaImages = [
+                "https://cdn.pixabay.com/photo/2019/04/17/14/54/mosque-4134459_1280.jpg",
+                "https://cdn.pixabay.com/photo/2017/06/13/20/16/casablanca-2399980_1280.jpg",
+                "https://media.gettyimages.com/id/84288050/fr/photo/place-mohammed-v-and-city-skyline-dusk.jpg?s=612x612&w=0&k=20&c=iLyuxkuakGgTnzJpUZBudlPIQTvpIi9fSjrhJ63QGV4="
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: casablancaImages.count)
+            return casablancaImages[index]
+            
+        case .tangier:
+            let tangierImages = [
+                "https://media.gettyimages.com/id/1979490792/fr/photo/view-of-tanger-city-beach-morocco.jpg?s=612x612&w=0&k=20&c=Sw3F_J3oLpgRkfmH7k55xJMa89vle6BTljTylJ4d2Mc=",
+                "https://media.gettyimages.com/id/986935356/fr/photo/north-africa-maghreb-morocco-tangier-old-medina-and-famous-continental-hotel.jpg?s=612x612&w=0&k=20&c=C7RP5QEcYz6cvnpDM404su8p5uvofIAp8QZNhkLWCtY=",
+                "https://media.gettyimages.com/id/979518900/fr/photo/tangier-harbour.jpg?s=612x612&w=0&k=20&c=6A_g9UmhyB4z7CmEiVDQ1qJXWjNwXqJYpn-hrl0g5qg="
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: tangierImages.count)
+            return tangierImages[index]
+            
+        case .marrakech:
+            let marrakechImages = [
+                "https://media.gettyimages.com/id/475057992/fr/photo/soir%C3%A9e-djemaa-el-fna-la-mosqu%C3%A9e-de-la-koutoubia-marrakech-maroc.jpg?s=612x612&w=0&k=20&c=kR27kcBe8Hf0uIutFHF5mRv4op4CxfuBhIJHpUKKYHM=",
+                "https://media.gettyimages.com/id/577088095/fr/photo/menara-pavilion-and-gardens-marrakesh.jpg?s=612x612&w=0&k=20&c=wzGIbUyCABIOMpBDsYtHPXFUh5TI3YPvHdW8MNFn8I0=",
+                "https://media.gettyimages.com/id/1452433155/fr/photo/touriste-chinoise-dorigine-asiatique-curieuse-regardant-des-fleurs-s%C3%A9ch%C3%A9es-color%C3%A9es-sur-un.jpg?s=612x612&w=0&k=20&c=xo-uPjXZ3vGscxDfbEz0Sro80ZbGpzJGcQKE1C1nQ9E="
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: marrakechImages.count)
+            return marrakechImages[index]
+            
+        case .amsterdam:
+            let amsterdamImages = [
+                "https://media.gettyimages.com/id/1495422795/fr/photo/old-historic-dutch-houses-reflecting-in-the-canal-on-a-sunny-day-amsterdam-netherlands.jpg?s=612x612&w=0&k=20&c=zAq5X3vqwA2s4Xyo7h_l1qv0w8ThQmEzYN-IiCHe3k4=",
+                "https://media.gettyimages.com/photo/tulipes-et-moulins-%C3%A0-vent.jpg?s=612x612&w=0&k=20&c=fSir4_pq-wAbwXNoZJV9lL2TrYo2iWj52jG7mgukq2I=",
+                "https://media.gettyimages.com/id/1407111882/fr/photo/traditional-dutch-houses-reflecting-in-the-canal-in-jordaan-neighbourhood-amsterdam.jpg?s=612x612&w=0&k=20&c=5aIciikZM5u8AEvBCeGjgTzXFNUkI00CjYv-7tb6OdU="
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: amsterdamImages.count)
+            return amsterdamImages[index]
+            
+        case .london:
+            let londonImages = [
+                "https://media.gettyimages.com/id/174726708/photo/london-big-ben-and-traffic-on-westminster-bridge.jpg?s=612x612&w=0&k=20&c=K0EcQ1Eq_F22vek8L9CVRCww12g6V3LPdWGboF0NMWo=",
+                "https://media.gettyimages.com/id/2158963864/photo/aerial-view-of-finance-district-in-london.jpg?s=612x612&w=0&k=20&c=rci0quMZuxaVrS9qp0DZ3w2AtxPC2TCdqWjAocdjYW0=",
+                "https://media.gettyimages.com/id/1464758942/photo/regent-street-and-red-double-decker-bus-london-uk.jpg?s=612x612&w=0&k=20&c=iSP9GbAmCdSkphuXz4ct9xC7a5RFlBGByMhSovD24IU=",
+                "https://media.gettyimages.com/id/1974859701/photo/pink-magnolia-blossoms-adorn-londons-streets-in-spring.jpg?s=612x612&w=0&k=20&c=ydu8pGx2QY3_Qzl_SH5bfvJxek_PYSvIO6LHjC2dyXA="
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: londonImages.count)
+            return londonImages[index]
+            
+        case .istanbul:
+            let istanbulImages = [
+                "https://media.gettyimages.com/id/1942782951/photo/istanbul-cityscape-with-bosphorus-and-galata-tower-on-a-sunny-summer-day-turkey.jpg?s=612x612&w=0&k=20&c=xeHgGnCDWUU0NO6RExp69cz8y9PFoDTg9zsAtbJvlv8=",
+                "https://media.gettyimages.com/id/160193420/photo/blue-mosque-in-istanbul.jpg?s=612x612&w=0&k=20&c=GABmGJwvlo-ejMwPZKCU4YCUyiVxXNHc5dDneL7o0Mg=",
+                "https://media.gettyimages.com/id/1576877722/photo/narrow-street-with-galata-tower-and-historic-building-in-beyoglu-district-istanbul-turkey.jpg?s=612x612&w=0&k=20&c=kwQZjR-BkXbY_2KJ0DB0amw4kXZF5WJf_OwmuHg4Mog=",
+                "https://media.gettyimages.com/id/522616554/photo/grand-bazaar-in-istanbul.jpg?s=612x612&w=0&k=20&c=mDUbw5CoBqK_zqkNfsxk2P9KPC2szX07Df7CWorOnUA="
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: istanbulImages.count)
+            return istanbulImages[index]
+            
+        case .prague:
+            let pragueImages = [
+                "https://media.gettyimages.com/id/1488321283/photo/old-town-square.jpg?s=612x612&w=0&k=20&c=9HoiJWkQ-qNpP03owQ1798NBAwzXpREIHVHp2Q1bRyY=",
+                "https://media.gettyimages.com/id/142761840/photo/view-from-letna-to-prague-city.jpg?s=612x612&w=0&k=20&c=ShQufC49I7l1QE-c0_ZRUZayVVi2_znSkgXG_sUD8VU=",
+                "https://media.gettyimages.com/id/1733473763/photo/view-of-prague-old-town-at-winter-over-vltava-river.jpg?s=612x612&w=0&k=20&c=Y-ms3x4vUxsjRrIU4YyWEbi6LgPX7PpKZf6QRdUPrAQ="
+            ]
+            let index = getUniqueImageIndex(for: tour, totalImages: pragueImages.count)
+            return pragueImages[index]
+            
         default:
-            return "https://images.unsplash.com/photo-1502602898536-47ad22581b52?w=400&h=300&fit=crop"
+            // Pour les autres villes, utiliser les images de Paris par défaut
+            let parisImages = [
+                "https://cdn.pixabay.com/photo/2022/09/02/13/45/paris-7427636_1280.jpg",
+                "https://cdn.pixabay.com/photo/2021/11/17/15/07/paris-6803796_1280.jpg",
+                "https://cdn.pixabay.com/photo/2024/09/22/09/39/pantheon-paris-9065570_1280.jpg",
+                "https://cdn.pixabay.com/photo/2021/08/14/01/58/museum-6544420_1280.jpg"
+            ]
+            let tourIndex = getTourIndex(for: tour)
+            let index = tourIndex % parisImages.count
+            return parisImages[index]
         }
+    }
+    
+    // Fonction pour obtenir l'index du tour dans la liste des tours de sa ville
+    // Dictionnaire pour suivre les images utilisées par ville
+    @State private var usedImagesByCity: [City: Set<Int>] = [:]
+    
+    private func getTourIndex(for tour: GuidedTour) -> Int {
+        // Utiliser une combinaison de plusieurs propriétés pour créer un index unique
+        let combinedString = tour.title + tour.id + String(tour.stops.count) + tour.difficulty.rawValue
+        let combinedHash = abs(combinedString.hashValue)
+        return combinedHash % 100 // Limiter à 100 pour éviter les nombres trop grands
+    }
+    
+    private func getUniqueImageIndex(for tour: GuidedTour, totalImages: Int) -> Int {
+        let city = tour.city
+        
+        // Utiliser une approche déterministe basée sur l'ID du tour pour éviter les conflits
+        // sans modifier l'état pendant le rendu
+        let tourId = tour.id
+        let cityHash = city.rawValue.hashValue
+        
+        // Éviter le débordement arithmétique en utilisant une approche plus sûre
+        let tourHash = tourId.hashValue
+        let combinedHash = abs(tourHash ^ cityHash) // Utiliser XOR au lieu de l'addition
+        
+        // Calculer un index unique basé sur le hash combiné
+        var imageIndex = combinedHash % totalImages
+        
+        // Si l'index est 0, utiliser une variation basée sur d'autres propriétés
+        if imageIndex == 0 {
+            let titleHash = tour.title.hashValue
+            let difficultyHash = tour.difficulty.rawValue.hashValue
+            imageIndex = abs(titleHash ^ difficultyHash) % totalImages
+        }
+        
+        return imageIndex
     }
     
     var body: some View {
         Button(action: onDetailsTap) {
             VStack(alignment: .leading, spacing: 16) {
-                // Tour Image avec image représentative
-                AsyncImage(url: URL(string: getRepresentativeImage(for: tour))) { image in
+                // Tour Image (phase-based pour gérer succès/erreur proprement)
+                AsyncImage(url: URL(string: getPreferredImageURL(for: tour))) { phase in
+                    switch phase {
+                    case .empty:
+                        Rectangle()
+                            .fill(LinearGradient(
+                                gradient: Gradient(colors: [ItinerarlyTheme.ModeColors.guidedTours.opacity(0.3), ItinerarlyTheme.ModeColors.guidedTours.opacity(0.1)]),
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ))
+                            .aspectRatio(16.0/9.0, contentMode: .fill)
+                            .overlay(
+                                ProgressView()
+                                    .tint(.white)
+                            )
+                    case .success(let image):
                     image
                         .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } placeholder: {
+                            .scaledToFill()
+                            .aspectRatio(16.0/9.0, contentMode: .fill)
+                            .transition(.opacity)
+                    case .failure:
+                        // Tentative de chargement d'une image de secours
+                        AsyncImage(url: URL(string: getFallbackImageURL(for: tour))) { secondaryPhase in
+                            switch secondaryPhase {
+                            case .empty:
+                                Rectangle()
+                                    .fill(LinearGradient(
+                                        gradient: Gradient(colors: [ItinerarlyTheme.ModeColors.guidedTours.opacity(0.3), ItinerarlyTheme.ModeColors.guidedTours.opacity(0.1)]),
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    ))
+                                    .aspectRatio(16.0/9.0, contentMode: .fill)
+                                    .overlay(ProgressView().tint(.white))
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                                    .aspectRatio(16.0/9.0, contentMode: .fill)
+                            case .failure:
                     Rectangle()
                         .fill(LinearGradient(
                             gradient: Gradient(colors: [ItinerarlyTheme.ModeColors.guidedTours.opacity(0.3), ItinerarlyTheme.ModeColors.guidedTours.opacity(0.1)]),
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ))
+                        .aspectRatio(16.0/9.0, contentMode: .fill)
                         .overlay(
                             Image(systemName: "photo")
                                 .font(.system(size: 30))
                                 .foregroundColor(.white)
                         )
+                            @unknown default:
+                                Color.gray.opacity(0.2)
+                            }
+                        }
+                    @unknown default:
+                        Color.gray.opacity(0.2)
+                    }
                 }
-                .frame(height: 150)
+                // Hauteur fixe et recadrage pour éviter les images trop hautes
+                .frame(height: ItinerarlyTheme.Sizes.tourCardImageHeight)
                 .cornerRadius(12)
+                .clipped()
                 
                 // Tour Info
                 VStack(alignment: .leading, spacing: ItinerarlyTheme.Spacing.sm) {
@@ -953,12 +1295,52 @@ struct TourCard: View {
 // MARK: - Helper Functions
 extension GuidedToursView {
     private func getUniqueCountries() -> [String] {
-        let countries = Set(City.allCases.map { $0.country })
-        return Array(countries).sorted()
+        // Pays autorisés pour les tours guidés curés
+        return [
+            "Allemagne",
+            "Belgique",
+            "Espagne",
+            "États-Unis",
+            "France",
+            "Italie",
+            "Luxembourg",
+            "Maroc",
+            "Pays-Bas",
+            "Royaume-Uni",
+            "Turquie",
+            "Tchéquie"
+        ]
     }
     
     private func getCitiesForCountry(_ country: String) -> [City] {
-        return City.allCases.filter { $0.country == country }.sorted { $0.displayName < $1.displayName }
+        switch country {
+        case "France":
+            return [.paris, .marseille, .lyon, .nice, .bordeaux]
+        case "Belgique":
+            return [.brussels, .bruges]
+        case "Luxembourg":
+            return [.luxembourg]
+        case "Allemagne":
+            return [.berlin]
+        case "Espagne":
+            return [.barcelona, .madrid]
+        case "Italie":
+            return [.rome, .milan]
+        case "Maroc":
+            return [.casablanca, .tangier, .marrakech]
+        case "Royaume-Uni":
+            return [.london]
+        case "Turquie":
+            return [.istanbul]
+        case "États-Unis":
+            return [.newYork]
+        case "Pays-Bas":
+            return [.amsterdam]
+        case "Tchéquie":
+            return [.prague]
+        default:
+            return []
+        }
     }
 }
 
@@ -982,6 +1364,31 @@ struct CountryFilterButton: View {
                     Color(.systemGray6)
                 )
                 .cornerRadius(20)
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+} 
+
+// MARK: - Transport button harmonisé (taille compacte)
+struct GTTransportModeButton: View {
+    let mode: TransportMode
+    let isSelected: Bool
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: mode.icon)
+                    .font(.system(size: 14, weight: .medium))
+                Text(mode.displayName)
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(width: 70, height: 48)
+            .background(isSelected ? Color.blue : Color(.systemGray6))
+            .foregroundColor(isSelected ? .white : .primary)
+            .cornerRadius(8)
         }
         .buttonStyle(PlainButtonStyle())
     }

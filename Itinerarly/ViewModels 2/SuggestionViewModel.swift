@@ -2,6 +2,8 @@ import Foundation
 import CoreLocation
 import Combine
 import SwiftUI
+import MapKit
+import Contacts
 
 // MARK: - Modèles pour le Mode Suggestion
 struct SuggestionFilter {
@@ -37,7 +39,10 @@ class SuggestionViewModel: ObservableObject {
     // MARK: - Catégories disponibles
     let availableCategories: [LocationCategory] = [
         .restaurant, .cafe, .museum, .culture, .sport, 
-        .shopping, .nature, .bar, .entertainment, .aquarium, .zoo
+        .shopping, .nature, .bar, .entertainment, .aquarium, .zoo,
+        .bowling, .iceRink, .swimmingPool, .climbingGym, .escapeRoom,
+        .laserTag, .miniGolf, .paintball, .karting, .trampolinePark,
+        .waterPark, .adventurePark
     ]
     
     // MARK: - Temps disponibles (en minutes)
@@ -52,6 +57,7 @@ class SuggestionViewModel: ObservableObject {
     
     // MARK: - Recherche de suggestions
     func findSuggestions() async {
+        print("🚀 DÉBUT findSuggestions() - Catégories: \(selectedCategories), Adresse: '\(filter.address)'")
         isLoading = true
         errorMessage = nil
         suggestions = []
@@ -82,7 +88,7 @@ class SuggestionViewModel: ObservableObject {
                 
                 // Calculer le temps total cumulé (temps de visite + temps de trajet)
                 let totalVisitTime = suggestions.reduce(0) { $0 + $1.estimatedDuration }
-                let travelTime = calculateTravelTime(from: userLocation, suggestions: suggestions, transportMode: filter.transportMode)
+                let travelTime = await calculateTravelTimeWithAppleETA(from: userLocation, suggestions: suggestions, transportMode: filter.transportMode)
                 let totalDuration = totalVisitTime + travelTime
                 
                 // Calculer la distance totale du trajet complet
@@ -237,22 +243,56 @@ class SuggestionViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Rechercher des lieux avec l'API
+    // MARK: - Rechercher des lieux via Apple Plans (recherche textuelle comme vous tapez)
     private func searchPlaces(near location: CLLocation) async throws -> [Location] {
-        print("🔍 Recherche de lieux pour \(filter.categories.count) catégories")
+        print("🔍 Recherche Apple Plans textuelle – catégories sélectionnées: \(filter.categories)")
         print("📍 Localisation: \(location.coordinate)")
         print("📏 Rayon: \(filter.maxRadius) km")
         
-        let searchService = OpenTripMapService()
+        var allPlaces: [Location] = []
+        let searchService = UniversalPlaceSearchService()
         
-        let places = try await searchService.searchPlaces(
-            categories: Array(filter.categories),
-            near: location,
-            radius: filter.maxRadius * 1000 // Convertir en mètres
-        )
+        // Utiliser UNIQUEMENT la méthode Apple Plans pour chaque catégorie
+        for category in filter.categories {
+            print("🎯 Recherche Apple Plans pour: \(category.displayName)")
+            
+            let places: [Location] = await withCheckedContinuation { continuation in
+                searchService.searchPlacesForCategory(
+                    category: category,
+                    near: location,
+                    radius: filter.maxRadius * 1000 // Convertir km en mètres
+                ) { places in
+                    continuation.resume(returning: places)
+                }
+            }
+            
+            allPlaces.append(contentsOf: places)
+            print("✅ Trouvé \(places.count) lieux pour \(category.displayName)")
+        }
         
-        print("✅ \(places.count) lieux trouvés par l'API")
-        return places
+        // Si aucune catégorie sélectionnée, chercher quelques catégories populaires
+        if filter.categories.isEmpty {
+            print("📍 Aucune catégorie spécifiée, recherche catégories populaires")
+            let popularCategories: [LocationCategory] = [
+                .restaurant, .cafe, .bar, .museum, .shopping, .nature, .entertainment
+            ]
+            
+            for category in popularCategories {
+                let places: [Location] = await withCheckedContinuation { continuation in
+                    searchService.searchPlacesForCategory(
+                        category: category,
+                        near: location,
+                        radius: filter.maxRadius * 1000
+                    ) { places in
+                        continuation.resume(returning: places)
+                    }
+                }
+                allPlaces.append(contentsOf: places)
+            }
+        }
+        
+        print("✅ Total Apple Plans: \(allPlaces.count) lieux trouvés")
+        return allPlaces
     }
     
     // MARK: - Filtrer les lieux
@@ -364,8 +404,56 @@ class SuggestionViewModel: ObservableObject {
             print("💡 Conseil: Augmentez le rayon de recherche ou le temps disponible")
         }
         
-        // 3. Ne PAS compléter avec d'autres lieux - respecter exactement les catégories sélectionnées
-        
+        // 3. Compléter pour remplir au mieux le temps disponible
+        if !places.isEmpty {
+            var pool = places
+            // Retirer ceux déjà utilisés
+            let usedIds = Set(finalSuggestions.map { $0.location.id })
+            pool.removeAll { usedIds.contains($0.id) }
+
+            // On ne prend que des lieux appartenant aux catégories sélectionnées
+            pool = pool.filter { selectedCategories.contains($0.category) }
+
+            // Remplir jusqu'à approcher le temps disponible (incluant un estimate de trajet)
+            var currentTotalVisit = finalSuggestions.reduce(0) { $0 + $1.estimatedDuration }
+            var currentETA = approximateRouteTime(from: userLocation, suggestions: finalSuggestions, transportMode: filter.transportMode)
+            var currentTotal = currentTotalVisit + currentETA
+            let target = filter.availableTime
+            let tolerance: TimeInterval = 600 // 10 min
+
+            while currentTotal + 300 < target, !pool.isEmpty { // marge de 5 min pour éviter de boucler
+                // Choisir le prochain lieu le plus proche du dernier point
+                let lastCoord: CLLocationCoordinate2D = finalSuggestions.last?.location.coordinate ?? userLocation.coordinate
+                let sortedByProximity = pool.sorted { a, b in
+                    let da = CLLocation(latitude: a.latitude, longitude: a.longitude).distance(from: CLLocation(latitude: lastCoord.latitude, longitude: lastCoord.longitude))
+                    let db = CLLocation(latitude: b.latitude, longitude: b.longitude).distance(from: CLLocation(latitude: lastCoord.latitude, longitude: lastCoord.longitude))
+                    return da < db
+                }
+
+                guard let nextPlace = sortedByProximity.first else { break }
+
+                let etaToNext = approximateTravelTime(from: lastCoord, to: nextPlace.coordinate, transportMode: filter.transportMode)
+                let nextDuration = getEstimatedDuration(for: nextPlace.category)
+                let projected = currentTotal + etaToNext + nextDuration
+
+                // Accepter si on reste sous la cible + tolérance
+                if projected <= target + tolerance {
+                    let distKm = CLLocation(latitude: lastCoord.latitude, longitude: lastCoord.longitude).distance(from: nextPlace.clLocation) / 1000
+                    let interest = calculateInterestScore(for: nextPlace, distance: distKm)
+                    finalSuggestions.append(SuggestionResult(location: nextPlace, estimatedDuration: nextDuration, distance: distKm, interestScore: interest, description: ""))
+
+                    currentTotalVisit += nextDuration
+                    currentETA += etaToNext
+                    currentTotal = currentTotalVisit + currentETA
+                    pool.removeAll { $0.id == nextPlace.id }
+                } else {
+                    // Si cela dépasse trop, on tente d'autres lieux; sinon on s'arrête
+                    pool.removeAll { $0.id == nextPlace.id }
+                    if projected > target + tolerance && pool.isEmpty { break }
+                }
+            }
+        }
+
         // 4. Trier par score d'intérêt final
         finalSuggestions.sort { $0.interestScore > $1.interestScore }
         
@@ -377,6 +465,18 @@ class SuggestionViewModel: ObservableObject {
         print("📏 Distance totale: \(String(format: "%.1f", totalDistance))km sur \(filter.maxRadius)km disponible")
         
         return finalSuggestions
+    }
+
+    // Estimation rapide du temps de trajet sur l'ordre courant des suggestions (fallback, sans Apple ETA)
+    private func approximateRouteTime(from startLocation: CLLocation, suggestions: [SuggestionResult], transportMode: TransportMode) -> TimeInterval {
+        guard !suggestions.isEmpty else { return 0 }
+        var total: TimeInterval = 0
+        var current = startLocation.coordinate
+        for s in suggestions {
+            total += approximateTravelTime(from: current, to: s.location.coordinate, transportMode: transportMode)
+            current = s.location.coordinate
+        }
+        return total
     }
     
     // MARK: - Calculer la durée estimée (durées adaptées aux temps recommandés)
@@ -468,13 +568,16 @@ class SuggestionViewModel: ObservableObject {
     
     // MARK: - Actions utilisateur
     func toggleCategory(_ category: LocationCategory) {
+        print("🔄 Toggle catégorie: \(category.displayName)")
         if selectedCategories.contains(category) {
             selectedCategories.remove(category)
+            print("❌ Catégorie \(category.displayName) désélectionnée")
         } else {
             selectedCategories.insert(category)
+            print("✅ Catégorie \(category.displayName) sélectionnée")
         }
         filter.categories = selectedCategories
-        print("📝 Catégories sélectionnées: \(selectedCategories.count) - \(selectedCategories)")
+        print("📝 Total catégories sélectionnées: \(selectedCategories.count) - \(selectedCategories)")
     }
     
     func updateMaxRadius(_ radius: Double) {
@@ -582,34 +685,72 @@ class SuggestionViewModel: ObservableObject {
         return totalDistance
     }
     
-    // MARK: - Calcul du temps de trajet
-    private func calculateTravelTime(from startLocation: CLLocation, suggestions: [SuggestionResult], transportMode: TransportMode) -> TimeInterval {
+    // MARK: - Calcul du temps de trajet via Apple Plans (ETA)
+    private func calculateTravelTimeWithAppleETA(from startLocation: CLLocation, suggestions: [SuggestionResult], transportMode: TransportMode) async -> TimeInterval {
         guard !suggestions.isEmpty else { return 0 }
         
-        let totalDistance = calculateTotalDistance(from: startLocation, suggestions: suggestions) * 1000 // en mètres
-        
-        // Vitesses moyennes selon le mode de transport
-        let speedInMetersPerSecond: Double
-        switch transportMode {
-        case .walking:
-            speedInMetersPerSecond = 5000.0 / 3600.0 // 5 km/h
-        case .cycling:
-            speedInMetersPerSecond = 15000.0 / 3600.0 // 15 km/h
-        case .driving:
-            speedInMetersPerSecond = 30000.0 / 3600.0 // 30 km/h (en ville)
-        case .publicTransport:
-            speedInMetersPerSecond = 20000.0 / 3600.0 // 20 km/h (transport public)
+        var total: TimeInterval = 0
+        var current = startLocation.coordinate
+
+        for suggestion in suggestions {
+            let next = CLLocationCoordinate2D(latitude: suggestion.location.latitude, longitude: suggestion.location.longitude)
+            do {
+                let eta = try await requestETA(from: current, to: next, transportMode: transportMode)
+                total += eta
+                print("🕒 ETA segment: \(String(format: "%.1f", eta/60)) min → cumul: \(String(format: "%.1f", total/60)) min")
+            } catch {
+                // Fallback en cas d'échec (approximation par vitesse moyenne)
+                let fallback = approximateTravelTime(from: current, to: next, transportMode: transportMode)
+                total += fallback
+                print("⚠️ ETA indisponible, fallback: \(String(format: "%.1f", fallback/60)) min")
+            }
+            current = next
         }
-        
-        let travelTime = totalDistance / speedInMetersPerSecond
-        
-        print("🚶 Temps de trajet calculé:")
-        print("   Mode: \(transportMode)")
-        print("   Distance: \(String(format: "%.2f", totalDistance/1000)) km")
-        print("   Vitesse: \(String(format: "%.1f", speedInMetersPerSecond * 3.6)) km/h")
-        print("   Temps: \(String(format: "%.1f", travelTime/60)) min")
-        
-        return travelTime
+
+        print("🧭 Temps de trajet total (Apple ETA + fallback): \(String(format: "%.1f", total/60)) min")
+        return total
+    }
+
+    private func requestETA(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D, transportMode: TransportMode) async throws -> TimeInterval {
+        let sourceItem = MKMapItem(placemark: MKPlacemark(coordinate: from))
+        let destItem = MKMapItem(placemark: MKPlacemark(coordinate: to))
+
+        let request = MKDirections.Request()
+        request.source = sourceItem
+        request.destination = destItem
+        request.requestsAlternateRoutes = false
+        request.departureDate = Date()
+        request.transportType = mkTransportType(for: transportMode)
+
+        let directions = MKDirections(request: request)
+        let etaResponse = try await directions.calculateETA()
+        return etaResponse.expectedTravelTime
+    }
+
+    private func mkTransportType(for mode: TransportMode) -> MKDirectionsTransportType {
+        switch mode {
+        case .walking: return .walking
+        case .driving: return .automobile
+        case .publicTransport: return .transit
+        case .cycling:
+            // Non supporté par MKDirections → on choisit walking pour l’ETA (et on garde un fallback d’approximation)
+            return .walking
+        }
+    }
+
+    private func approximateTravelTime(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D, transportMode: TransportMode) -> TimeInterval {
+        let start = CLLocation(latitude: from.latitude, longitude: from.longitude)
+        let end = CLLocation(latitude: to.latitude, longitude: to.longitude)
+        let meters = start.distance(from: end)
+
+        let speedMps: Double
+        switch transportMode {
+        case .walking: speedMps = 5000.0 / 3600.0
+        case .cycling: speedMps = 15000.0 / 3600.0
+        case .driving: speedMps = 30000.0 / 3600.0
+        case .publicTransport: speedMps = 20000.0 / 3600.0
+        }
+        return meters / speedMps
     }
 }
 

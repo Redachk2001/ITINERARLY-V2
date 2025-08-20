@@ -1,351 +1,239 @@
 import Foundation
 import CoreLocation
-import Combine
 import MapKit
 
-// MARK: - Service de Recherche Universel (MapKit + Fallback)
+// MARK: - Service de Recherche Apple Plans UNIQUEMENT
 class UniversalPlaceSearchService: ObservableObject {
     @Published var isSearching = false
     @Published var searchResults: [Location] = []
     
-    // Services
-    private let placeSearchService = PlaceSearchService()
-    private let comprehensiveService = ComprehensivePlaceSearchService()
-    
-    // MARK: - Recherche universelle pour toutes les catégories
-    func searchPlaces(
-        for categories: [LocationCategory],
-        near location: CLLocation,
-        explorationRadius: Double, // Rayon d'exploration en km
-        maxTime: TimeInterval, // Temps disponible en secondes
-        completion: @escaping ([Location]) -> Void
-    ) {
-        print("🌍 UniversalPlaceSearch - Recherche mondiale pour \(categories.count) catégories")
-        print("📍 Localisation: \(location.coordinate.latitude), \(location.coordinate.longitude)")
-        print("🎯 Rayon d'exploration: \(explorationRadius) km")
-        print("⏰ Temps disponible: \(maxTime / 3600) heures")
-        
-        isSearching = true
-        
-        // Convertir le rayon d'exploration en mètres
-        _ = explorationRadius * 1000
-        
-        // Utiliser directement les services MapKit
-        print("🔍 Utilisation des services MapKit")
-        performMapKitSearch(
-            categories: categories,
-            location: location,
-            explorationRadius: explorationRadius,
-            maxTime: maxTime,
-            completion: completion
-        )
-    }
-    
-    // MARK: - Recherche avec MapKit
-    private func performMapKitSearch(
-        categories: [LocationCategory],
-        location: CLLocation,
-        explorationRadius: Double,
-        maxTime: TimeInterval,
-        completion: @escaping ([Location]) -> Void
-    ) {
-        print("🗺️ MapKit - Recherche avec services locaux")
-        print("🎯 Rayon d'exploration: \(explorationRadius) km")
-        print("⏰ Temps disponible: \(maxTime / 3600) heures")
-        
-        var allPlaces: [Location] = []
-        let group = DispatchGroup()
-        
-        // Convertir le rayon d'exploration en mètres
-        let radiusInMeters = explorationRadius * 1000
-        
-        // Recherche avec PlaceSearchService
-        for category in categories {
-            group.enter()
-            
-            placeSearchService.searchPlaces(
-                category: category,
-                near: location.coordinate,
-                radius: radiusInMeters * 1.5 // Légèrement plus large pour avoir du choix
-            ) { places in
-                print("📍 PlaceSearchService - \(places.count) lieux pour \(category.displayName)")
-                allPlaces.append(contentsOf: places)
-                group.leave()
-            }
-        }
-        
-        // Recherche avec ComprehensivePlaceSearchService
-        group.enter()
-        comprehensiveService.searchPlaces(
-            for: categories,
-            near: location,
-            maxDistance: explorationRadius
-        ) { places in
-            print("📍 ComprehensiveService - \(places.count) lieux trouvés")
-            allPlaces.append(contentsOf: places)
-            group.leave()
-        }
-        
-        group.notify(queue: .main) {
-            print("✅ MapKit - Total: \(allPlaces.count) lieux trouvés")
-            
-            // Optimiser les lieux selon le temps disponible
-            let optimizedPlaces = self.optimizePlacesForTime(
-                places: allPlaces,
-                maxTime: maxTime,
-                startLocation: location.coordinate
-            )
-            
-            self.isSearching = false
-            self.searchResults = optimizedPlaces
-            completion(optimizedPlaces)
-        }
-    }
-    
-    // MARK: - Recherche spécifique pour une catégorie
+    // MARK: - Recherche spécifique pour une catégorie (Apple Plans uniquement)
     func searchPlacesForCategory(
         category: LocationCategory,
         near location: CLLocation,
         radius: Double = 5000,
         completion: @escaping ([Location]) -> Void
     ) {
-        print("🎯 Recherche spécifique pour \(category.displayName)")
+        // Utiliser uniquement la recherche Apple Plans
+        performDirectAppleMapsSearch(category: category, near: location, radius: radius, completion: completion)
+    }
+    
+    // MARK: - Recherche automatique avec sélection intelligente (comme Apple Plans)
+    func searchAndSelectBestPlace(
+        category: LocationCategory,
+        from startAddress: String,
+        completion: @escaping (Location?) -> Void
+    ) {
+        let searchTerm = getSearchTerm(for: category)
+        print("🎯 Recherche Apple Plans: '\(searchTerm)' depuis '\(startAddress)'")
         
-        // Requêtes spécialisées selon la catégorie
-        let queries = getSpecializedQueries(for: category)
-        var allPlaces: [Location] = []
-        let group = DispatchGroup()
-        
-        for query in queries {
-            group.enter()
+        // 1. Géocoder l'adresse de départ
+        let geocoder = CLGeocoder()
+        geocoder.geocodeAddressString(startAddress) { placemarks, error in
+            if let error = error {
+                print("❌ Erreur géocodage: \(error.localizedDescription)")
+                completion(nil)
+                return
+            }
             
-            // Recherche MapKit directe avec requête spécialisée
+            guard let placemark = placemarks?.first,
+                  let startLocation = placemark.location else {
+                print("❌ Impossible de géocoder l'adresse: \(startAddress)")
+                completion(nil)
+                return
+            }
+            
+            print("✅ Adresse géocodée: \(startLocation.coordinate)")
+            
+            // 2. Rechercher exactement comme dans Apple Plans
             let request = MKLocalSearch.Request()
-            request.naturalLanguageQuery = query
+            request.naturalLanguageQuery = searchTerm
             request.region = MKCoordinateRegion(
-                center: location.coordinate,
-                latitudinalMeters: radius * 3,
-                longitudinalMeters: radius * 3
+                center: startLocation.coordinate,
+                latitudinalMeters: 20000, // 20km de rayon
+                longitudinalMeters: 20000
             )
             request.resultTypes = [.pointOfInterest, .address]
             
             let search = MKLocalSearch(request: request)
             search.start { response, error in
-                DispatchQueue.main.async {
-                    if let error = error {
-                        print("❌ Erreur recherche '\(query)': \(error.localizedDescription)")
-                    } else {
-                        let mapItems = response?.mapItems ?? []
-                        print("🔍 Requête '\(query)': \(mapItems.count) résultats")
-                        
-                        let locations = mapItems.compactMap { mapItem -> Location? in
-                            guard let name = mapItem.name, !name.isEmpty else { return nil }
-                            
-                            return Location(
-                                id: UUID().uuidString,
-                                name: name,
-                                address: mapItem.placemark.formattedAddress,
-                                latitude: mapItem.placemark.coordinate.latitude,
-                                longitude: mapItem.placemark.coordinate.longitude,
-                                category: category,
-                                description: mapItem.pointOfInterestCategory?.rawValue,
-                                imageURL: nil,
-                                rating: Double.random(in: 3.5...4.5),
-                                openingHours: self.generateOpeningHours(for: category),
-                                recommendedDuration: self.getRecommendedDuration(for: category),
-                                visitTips: self.generateTips(for: category)
-                            )
-                        }
-                        
-                        allPlaces.append(contentsOf: locations)
-                    }
-                    group.leave()
+                guard let response = response else {
+                    print("❌ Erreur Apple Plans: \(error?.localizedDescription ?? "Inconnu")")
+                    completion(nil)
+                    return
+                }
+                
+                print("🎯 Apple Plans a trouvé \(response.mapItems.count) résultats pour '\(searchTerm)'")
+                
+                // 3. Convertir les résultats et trier par distance
+                let places = response.mapItems.compactMap { (mapItem: MKMapItem) -> Location? in
+                    guard let name = mapItem.name, !name.isEmpty else { return nil }
+                    
+                    return Location(
+                        id: UUID().uuidString,
+                        name: name,
+                        address: mapItem.placemark.formattedAddress ?? "Adresse non disponible",
+                        latitude: mapItem.placemark.coordinate.latitude,
+                        longitude: mapItem.placemark.coordinate.longitude,
+                        category: category,
+                        description: "Trouvé via Apple Plans",
+                        imageURL: nil,
+                        rating: 4.0,
+                        openingHours: "Voir Apple Plans",
+                        recommendedDuration: self.getRecommendedDuration(for: category),
+                        visitTips: self.generateTips(for: category)
+                    )
+                }.sorted { place1, place2 in
+                    let distance1 = startLocation.distance(from: CLLocation(latitude: place1.latitude, longitude: place1.longitude))
+                    let distance2 = startLocation.distance(from: CLLocation(latitude: place2.latitude, longitude: place2.longitude))
+                    return distance1 < distance2
+                }
+                
+                // 4. Sélectionner le premier (le plus proche)
+                if let bestPlace = places.first {
+                    let distance = startLocation.distance(from: CLLocation(latitude: bestPlace.latitude, longitude: bestPlace.longitude))
+                    print("✅ Lieu sélectionné: \(bestPlace.name) à \(Int(distance))m")
+                    completion(bestPlace)
+                } else {
+                    print("❌ Aucun lieu trouvé pour '\(searchTerm)'")
+                    completion(nil)
                 }
             }
         }
+    }
+    
+
+    
+    private func performDirectAppleMapsSearch(
+        category: LocationCategory,
+        near location: CLLocation,
+        radius: Double,
+        completion: @escaping ([Location]) -> Void
+    ) {
+        print("🎯 Recherche directe Apple Plans pour \(category.displayName)")
         
-        group.notify(queue: .main) {
-            let uniquePlaces = self.removeDuplicates(from: allPlaces)
-            let limitedPlaces = Array(uniquePlaces.prefix(15))
-            print("✅ Recherche spécifique: \(limitedPlaces.count) lieux pour \(category.displayName)")
-            completion(limitedPlaces)
+        // Utiliser MKLocalSearch avec une requête textuelle (comme quand on tape dans Apple Plans)
+        let searchTerm = getSearchTerm(for: category)
+        print("🔍 Recherche dans Apple Plans: '\(searchTerm)' près de \(location.coordinate)")
+        
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = searchTerm
+        request.region = MKCoordinateRegion(
+            center: location.coordinate,
+            latitudinalMeters: radius * 2,
+            longitudinalMeters: radius * 2
+        )
+        request.resultTypes = [.pointOfInterest, .address]
+        
+        let search = MKLocalSearch(request: request)
+        search.start { response, error in
+            guard let response = response else {
+                print("❌ Erreur de recherche Apple Plans: \(error?.localizedDescription ?? "Inconnu")")
+                completion([])
+                return
+            }
+            
+            print("🎯 Apple Plans a trouvé \(response.mapItems.count) résultats pour '\(searchTerm)'")
+            
+            let mappedLocations = response.mapItems.compactMap { (mapItem: MKMapItem) -> Location? in
+                guard let name = mapItem.name, !name.isEmpty else { return nil }
+                
+                print("📍 Lieu trouvé: \(name) - \(mapItem.placemark.formattedAddress ?? "Pas d'adresse")")
+                
+                return Location(
+                    id: UUID().uuidString,
+                    name: name,
+                    address: mapItem.placemark.formattedAddress ?? "Adresse non disponible",
+                    latitude: mapItem.placemark.coordinate.latitude,
+                    longitude: mapItem.placemark.coordinate.longitude,
+                    category: category,
+                    description: "Trouvé via Apple Plans",
+                    imageURL: nil,
+                    rating: 4.0,
+                    openingHours: "Voir Apple Plans",
+                    recommendedDuration: self.getRecommendedDuration(for: category),
+                    visitTips: self.generateTips(for: category)
+                )
+            }
+            
+            let sortedPlaces = mappedLocations.sorted { place1, place2 in
+                let distance1 = location.distance(from: CLLocation(latitude: place1.latitude, longitude: place1.longitude))
+                let distance2 = location.distance(from: CLLocation(latitude: place2.latitude, longitude: place2.longitude))
+                return distance1 < distance2
+            }
+            
+            print("✅ Apple Plans: \(sortedPlaces.count) lieux trouvés et triés par distance")
+            completion(sortedPlaces)
         }
     }
     
-    // MARK: - Requêtes spécialisées par catégorie
-    private func getSpecializedQueries(for category: LocationCategory) -> [String] {
+
+    
+    // MARK: - Termes de recherche Apple Plans (exactement comme vous tapez)
+    private func getSearchTerm(for category: LocationCategory) -> String {
         switch category {
         case .swimmingPool:
-            return ["swimming pool", "piscine", "natation", "centre aquatique", "complexe nautique"]
-        case .climbingGym:
-            return ["climbing gym", "escalade", "mur d'escalade", "salle d'escalade", "centre d'escalade"]
-        case .iceRink:
-            return ["ice rink", "patinoire", "skating rink", "centre de glace"]
+            return "piscine"
         case .bowling:
-            return ["bowling", "bowling alley", "quilles", "centre de bowling"]
+            return "bowling"
+        case .climbingGym:
+            return "escalade"
+        case .iceRink:
+            return "patinoire"
         case .miniGolf:
-            return ["mini golf", "golf miniature", "parcours de golf mini"]
+            return "mini golf"
         case .escapeRoom:
-            return ["escape room", "escape game", "salle d'énigmes", "jeu d'évasion"]
+            return "escape game"
         case .laserTag:
-            return ["laser tag", "laser game", "combat laser", "arène laser"]
+            return "laser game"
         case .paintball:
-            return ["paintball", "terrain de paintball", "centre de paintball"]
+            return "paintball"
         case .karting:
-            return ["karting", "go kart", "circuit de kart", "centre de karting"]
+            return "karting"
         case .trampolinePark:
-            return ["trampoline park", "jump park", "centre de trampoline", "parc trampoline"]
+            return "trampoline"
         case .waterPark:
-            return ["water park", "parc aquatique", "centre aquatique", "parc d'eau"]
+            return "parc aquatique"
         case .adventurePark:
-            return ["adventure park", "parc d'aventure", "accrobranche", "parcours aventure"]
+            return "parc aventure"
         case .zoo:
-            return ["zoo", "parc animalier", "jardin zoologique", "réserve animalière"]
+            return "zoo"
         case .aquarium:
-            return ["aquarium", "centre marin", "aquarium public", "parc marin"]
+            return "aquarium"
         case .restaurant:
-            return ["restaurant", "bistro", "brasserie", "gastronomie"]
+            return "restaurant"
         case .cafe:
-            return ["cafe", "coffee shop", "salon de thé", "café"]
+            return "café"
         case .bar:
-            return ["bar", "pub", "cocktail bar", "wine bar"]
+            return "bar"
         case .museum:
-            return ["museum", "musée", "exposition", "galerie d'art"]
+            return "musée"
         case .shopping:
-            return ["shopping mall", "centre commercial", "boutique", "magasin"]
+            return "magasin"
         case .sport:
-            return ["gym", "fitness center", "sport center", "centre sportif"]
+            return "salle de sport"
         case .nature:
-            return ["park", "garden", "parc", "jardin public"]
+            return "parc"
         case .entertainment:
-            return ["cinema", "theater", "cinéma", "théâtre"]
+            return "cinéma"
         case .historical:
-            return ["historical landmark", "monument", "site historique", "patrimoine"]
+            return "monument"
         case .culture:
-            return ["art gallery", "cultural center", "centre culturel", "galerie d'art"]
+            return "centre culturel"
         default:
-            return ["point of interest", "lieu d'intérêt", "activité"]
+            return category.displayName.lowercased()
         }
     }
     
-    // MARK: - Optimisation selon le temps disponible
-    private func optimizePlacesForTime(
-        places: [Location],
-        maxTime: TimeInterval,
-        startLocation: CLLocationCoordinate2D
-    ) -> [Location] {
-        print("🎯 Optimisation pour \(maxTime / 3600) heures disponibles")
-        
-        var selectedPlaces: [Location] = []
-        var currentTime: TimeInterval = 0
-        
-        // Trier les lieux par proximité et durée recommandée
-        let sortedPlaces = places.sorted { place1, place2 in
-            let startCLLocation = CLLocation(latitude: startLocation.latitude, longitude: startLocation.longitude)
-            let place1Location = CLLocation(latitude: place1.coordinate.latitude, longitude: place1.coordinate.longitude)
-            let place2Location = CLLocation(latitude: place2.coordinate.latitude, longitude: place2.coordinate.longitude)
-            
-            let distance1 = startCLLocation.distance(from: place1Location)
-            let distance2 = startCLLocation.distance(from: place2Location)
-            
-            // Priorité: proximité puis durée
-            if abs(distance1 - distance2) < 1000 { // Si distances similaires
-                return (place1.recommendedDuration ?? 3600) < (place2.recommendedDuration ?? 3600)
-            }
-            return distance1 < distance2
-        }
-        
-        // Sélectionner les lieux qui tiennent dans le temps disponible
-        for place in sortedPlaces {
-            let placeDuration = place.recommendedDuration ?? 3600 // 1h par défaut
-            let travelTime = calculateTravelTime(
-                from: selectedPlaces.last,
-                to: place,
-                userLocation: startLocation
-            )
-            
-            let totalTimeForPlace = placeDuration + travelTime
-            
-            if currentTime + totalTimeForPlace <= maxTime {
-                selectedPlaces.append(place)
-                currentTime += totalTimeForPlace
-                print("✅ Ajouté: \(place.name) (\(placeDuration / 3600)h + \(travelTime / 3600)h trajet)")
-            } else {
-                print("⏰ Temps dépassé pour: \(place.name)")
-                break
-            }
-        }
-        
-        print("🎯 Sélection finalisée: \(selectedPlaces.count) lieux pour \(currentTime / 3600) heures")
-        return selectedPlaces
-    }
+
     
-    private func calculateTravelTime(
-        from startPlace: Location?,
-        to endPlace: Location,
-        userLocation: CLLocationCoordinate2D
-    ) -> TimeInterval {
-        let startCoord = startPlace?.coordinate ?? userLocation
-        let endCoord = endPlace.coordinate
-        
-        let distance = CLLocation(latitude: startCoord.latitude, longitude: startCoord.longitude)
-            .distance(from: CLLocation(latitude: endCoord.latitude, longitude: endCoord.longitude))
-        
-        // Vitesse moyenne: 4 km/h à pied, 15 km/h à vélo, 25 km/h en voiture
-        let averageSpeed = 15.0 // km/h (moyenne vélo/voiture)
-        let timeInHours = (distance / 1000.0) / averageSpeed
-        
-        return timeInHours * 3600 // Convertir en secondes
-    }
+
     
-    private func calculateTotalTime(places: [Location]) -> Double {
-        let totalDuration = places.reduce(0.0) { total, place in
-            total + (place.recommendedDuration ?? 3600)
-        }
-        return totalDuration / 3600 // Retourner en heures
-    }
+
     
-    // MARK: - Utilitaires
-    private func removeDuplicates(from places: [Location]) -> [Location] {
-        var seen = Set<String>()
-        return places.filter { place in
-            let key = "\(place.latitude),\(place.longitude)"
-            if seen.contains(key) {
-                return false
-            } else {
-                seen.insert(key)
-                return true
-            }
-        }
-    }
+
     
-    private func generateOpeningHours(for category: LocationCategory) -> String {
-        switch category {
-        case .restaurant: return "12:00-22:00"
-        case .cafe: return "07:00-19:00"
-        case .bar: return "17:00-02:00"
-        case .museum: return "10:00-18:00"
-        case .shopping: return "09:00-20:00"
-        case .sport: return "06:00-22:00"
-        case .nature: return "24h/24"
-        case .entertainment: return "14:00-23:00"
-        case .swimmingPool: return "06:00-22:00"
-        case .climbingGym: return "08:00-22:00"
-        case .iceRink: return "10:00-21:00"
-        case .bowling: return "12:00-23:00"
-        case .miniGolf: return "10:00-20:00"
-        case .escapeRoom: return "10:00-22:00"
-        case .laserTag: return "14:00-23:00"
-        case .paintball: return "09:00-18:00"
-        case .karting: return "10:00-20:00"
-        case .trampolinePark: return "10:00-21:00"
-        case .waterPark: return "10:00-19:00"
-        case .adventurePark: return "09:00-18:00"
-        case .zoo: return "09:00-18:00"
-        case .aquarium: return "10:00-18:00"
-        default: return "09:00-18:00"
-        }
-    }
+
     
     private func getRecommendedDuration(for category: LocationCategory) -> TimeInterval {
         switch category {
@@ -397,57 +285,7 @@ class UniversalPlaceSearchService: ObservableObject {
         }
     }
     
-    // MARK: - Conversion avec Classification Améliorée
-    private func convertMapItemToLocationWithEnhancedClassification(_ mapItem: MKMapItem, originalCategory: LocationCategory) -> Location {
-        // Utiliser la classification améliorée
-        let enhancedClassifier = EnhancedAPIClassifier()
-        let finalCategory = enhancedClassifier.quickClassify(mapItem)
-        
-        return Location(
-            id: UUID().uuidString,
-            name: mapItem.name ?? "Lieu sans nom",
-            address: mapItem.placemark.formattedAddress,
-            latitude: mapItem.placemark.coordinate.latitude,
-            longitude: mapItem.placemark.coordinate.longitude,
-            category: finalCategory,
-            description: generateDescription(for: finalCategory),
-            imageURL: nil,
-            rating: Double.random(in: 3.5...4.8),
-            openingHours: generateOpeningHours(for: finalCategory),
-            recommendedDuration: getRecommendedDuration(for: finalCategory),
-            visitTips: generateTips(for: finalCategory)
-        )
-    }
-    
-    private func generateDescription(for category: LocationCategory) -> String {
-        switch category {
-        case .restaurant: return "Découvrez une expérience culinaire exceptionnelle"
-        case .cafe: return "Parfait pour une pause détente et conviviale"
-        case .bar: return "Ambiance conviviale pour vos soirées"
-        case .museum: return "Plongez dans l'histoire et la culture"
-        case .shopping: return "Trouvez des trésors uniques et variés"
-        case .sport: return "Bougez et restez actif dans un environnement moderne"
-        case .nature: return "Reconnectez-vous avec la nature et la tranquillité"
-        case .entertainment: return "Divertissements et spectacles pour tous"
-        case .historical: return "Découvrez le patrimoine et l'histoire locale"
-        case .culture: return "Enrichissez votre esprit avec l'art et la culture"
-        case .swimmingPool: return "Profitez d'activités aquatiques dans un cadre moderne"
-        case .climbingGym: return "Défiez-vous sur des murs d'escalade variés"
-        case .iceRink: return "Glissez sur la glace dans une ambiance conviviale"
-        case .bowling: return "Amusez-vous avec des parties de bowling entre amis"
-        case .miniGolf: return "Parcours de mini-golf pour toute la famille"
-        case .escapeRoom: return "Résolvez des énigmes passionnantes en équipe"
-        case .laserTag: return "Combat laser dans une arène futuriste"
-        case .paintball: return "Stratégie et adrénaline sur des terrains variés"
-        case .karting: return "Courses de karting pour tous les niveaux"
-        case .trampolinePark: return "Rebondissez dans un parc de trampolines"
-        case .waterPark: return "Attractions aquatiques pour toute la famille"
-        case .adventurePark: return "Parcours d'aventure dans la nature"
-        case .zoo: return "Découvrez des animaux fascinants du monde entier"
-        case .aquarium: return "Explorez les merveilles du monde marin"
-        default: return "Une expérience unique vous attend"
-        }
-    }
+
     
 
 } 

@@ -9,17 +9,43 @@ class ThemeManager: ObservableObject {
         }
     }
     
+    @Published var useSystemTheme: Bool {
+        didSet {
+            UserDefaults.standard.set(useSystemTheme, forKey: "useSystemTheme")
+            if useSystemTheme {
+                isDarkMode = UITraitCollection.current.userInterfaceStyle == .dark
+            }
+        }
+    }
+    
     init() {
-        // Charger la préférence sauvegardée ou utiliser le mode système par défaut
+        // Charger les préférences sauvegardées
+        self.useSystemTheme = UserDefaults.standard.bool(forKey: "useSystemTheme")
         self.isDarkMode = UserDefaults.standard.bool(forKey: "darkModeEnabled")
+        
+        // Si on utilise le thème système, détecter le mode actuel
+        if useSystemTheme {
+            self.isDarkMode = UITraitCollection.current.userInterfaceStyle == .dark
+        }
     }
     
     private func applyTheme() {
         // Appliquer le thème à toutes les fenêtres
         if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
             windowScene.windows.forEach { window in
-                window.overrideUserInterfaceStyle = isDarkMode ? .dark : .light
+                if useSystemTheme {
+                    window.overrideUserInterfaceStyle = .unspecified
+                } else {
+                    window.overrideUserInterfaceStyle = isDarkMode ? .dark : .light
+                }
             }
+        }
+    }
+    
+    // Fonction pour détecter les changements du système
+    func updateForSystemTheme() {
+        if useSystemTheme {
+            isDarkMode = UITraitCollection.current.userInterfaceStyle == .dark
         }
     }
 }

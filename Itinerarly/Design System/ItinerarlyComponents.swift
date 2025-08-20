@@ -254,7 +254,7 @@ struct ItinerarlySlider: View {
                     }
                 }
             }
-            .frame(height: 40)
+            .frame(height: 28)
         }
     }
 }
@@ -319,7 +319,7 @@ struct ItinerarlyLoadingView: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
         }
-        .padding(ItinerarlyTheme.Spacing.xl)
+        .padding(ItinerarlyTheme.Spacing.lg)
     }
 }
 

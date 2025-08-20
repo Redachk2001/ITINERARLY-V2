@@ -4,13 +4,18 @@ import SwiftUI
 struct ItinerarlyApp: App {
     @StateObject private var authManager = AuthManager()
     @StateObject private var locationManager = LocationManager()
+    @StateObject private var themeManager = ThemeManager()
     
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(authManager)
                 .environmentObject(locationManager)
-                .preferredColorScheme(.light)
+                .environmentObject(themeManager)
+                .preferredColorScheme(themeManager.useSystemTheme ? nil : (themeManager.isDarkMode ? .dark : .light))
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                    themeManager.updateForSystemTheme()
+                }
         }
     }
 } 

@@ -212,6 +212,12 @@ enum City: String, CaseIterable, Codable {
     case liverpool = "liverpool"
     case manchester = "manchester"
     case bristol = "bristol"
+
+    // Tchéquie
+    case prague = "prague"
+
+    // États-Unis
+    case newYork = "new_york"
     
     // Maroc
     case casablanca = "casablanca"
@@ -429,6 +435,12 @@ enum City: String, CaseIterable, Codable {
         case .liverpool: return "Liverpool"
         case .manchester: return "Manchester"
         case .bristol: return "Bristol"
+
+        // Tchéquie
+        case .prague: return "Prague"
+
+        // États-Unis
+        case .newYork: return "New York"
         
         // Maroc
         case .casablanca: return "Casablanca"
@@ -578,9 +590,17 @@ enum City: String, CaseIterable, Codable {
         case .london, .birmingham, .leeds, .glasgow, .sheffield, .bradford, .edinburgh, .liverpool, .manchester, .bristol:
             return "🇬🇧"
         
+        // États-Unis
+        case .newYork:
+            return "🇺🇸"
+        
         // Maroc
         case .casablanca, .rabat, .marrakech, .fez, .tangier, .agadir, .meknes, .oujda, .kenitra, .tetouan:
             return "🇲🇦"
+
+        // Tchéquie
+        case .prague:
+            return "🇨🇿"
         
         // Turquie
         case .istanbul, .ankara, .izmir, .bursa, .antalya, .adana, .konya, .gaziantep, .kayseri, .mersin:
@@ -636,6 +656,10 @@ enum City: String, CaseIterable, Codable {
             return "Pays-Bas"
         case .london, .birmingham, .leeds, .glasgow, .sheffield, .bradford, .edinburgh, .liverpool, .manchester, .bristol:
             return "Royaume-Uni"
+        case .prague:
+            return "Tchéquie"
+        case .newYork:
+            return "États-Unis"
         case .casablanca, .rabat, .marrakech, .fez, .tangier, .agadir, .meknes, .oujda, .kenitra, .tetouan:
             return "Maroc"
         case .istanbul, .ankara, .izmir, .bursa, .antalya, .adana, .konya, .gaziantep, .kayseri, .mersin:

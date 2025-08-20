@@ -2,10 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Cette app utilise votre localisation pour vous proposer des itinéraires personnalisés et des suggestions d'activités à proximité.</string>
-	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Cette app utilise votre localisation pour vous proposer des itinéraires personnalisés et des suggestions d'activités à proximité.</string>
+
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Cette app utilise le microphone pour les fonctionnalités audio des visites guidées.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
@@ -16,6 +13,8 @@
 	<string>Cette app utilise la caméra pour capturer vos souvenirs de voyage.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
+		<key>NSAllowsArbitraryLoadsForMedia</key>
+		<true/>
 		<key>NSExceptionDomains</key>
 		<dict>
 			<key>your-backend-url.com</key>
@@ -25,12 +24,60 @@
 				<key>NSExceptionMinimumTLSVersion</key>
 				<string>TLSv1.0</string>
 			</dict>
+			<key>images.unsplash.com</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.2</string>
+			</dict>
+			<key>pixabay.com</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.2</string>
+			</dict>
+			<key>cdn.pixabay.com</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.2</string>
+			</dict>
+			<key>commons.wikimedia.org</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.2</string>
+			</dict>
+			<key>upload.wikimedia.org</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.2</string>
+			</dict>
 		</dict>
 	</dict>
+	<key>PIXABAY_API_KEY</key>
+	<string>51691733-97175160872ea353e0d326ba6</string>
+	<key>GOOGLE_MAPS_API_KEY</key>
+	<string>REPLACE_WITH_YOUR_GOOGLE_API_KEY</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
-		<string>location</string>
 	</array>
 	<key>CFBundleURLTypes</key>
 	<array>

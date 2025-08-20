@@ -255,6 +255,29 @@ struct StatCard: View {
     }
 }
 
+struct StatChip: View {
+    let icon: String
+    let text: String
+    let color: Color
+    
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundColor(color)
+            
+            Text(text)
+                .font(.caption)
+                .fontWeight(.medium)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(color.opacity(0.1))
+        .foregroundColor(color)
+        .cornerRadius(20)
+    }
+}
+
 struct ProfileMenuRow: View {
     let icon: String
     let title: String
@@ -447,6 +470,8 @@ struct SettingsView: View {
     @State private var units = "Métrique"
     
     @State private var showingLanguageSheet = false
+    @State private var showingSubscriptionSheet = false
+    @StateObject private var storeKitService = StoreKitService.shared
     
     var body: some View {
         NavigationView {
@@ -501,29 +526,18 @@ struct SettingsView: View {
                     .background(Color(.systemBackground))
                     .cornerRadius(12)
                     
-                    // Apparence
+                    // Apparence et Langue
                     VStack(alignment: .leading, spacing: 16) {
                         TranslatedText("Apparence")
                             .font(.headline)
                             .fontWeight(.bold)
                         
                         VStack(spacing: 12) {
-                            HStack {
-                                Toggle(languageManager.translate("Mode sombre"), isOn: $themeManager.isDarkMode)
-                                
-                                Spacer()
-                                
-                                Image(systemName: themeManager.isDarkMode ? "moon.fill" : "sun.max.fill")
-                                    .foregroundColor(themeManager.isDarkMode ? .purple : .orange)
-                                    .font(.title3)
-                            }
-                            .padding()
-                            .background(Color(.systemGray6))
-                            .cornerRadius(8)
+                            // ThemeSelectorView()
                             
-                            Button(action: { 
+                            Button(action: {
                                 print("Bouton Langue appuyé!")
-                                showingLanguageSheet = true 
+                                showingLanguageSheet = true
                             }) {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
@@ -564,6 +578,38 @@ struct SettingsView: View {
                             .padding()
                             .background(Color(.systemGray6))
                             .cornerRadius(8)
+                            
+                            // Bouton Abonnement Premium
+                            Button(action: {
+                                showingSubscriptionSheet = true
+                            }) {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        TranslatedText("Abonnement Premium")
+                                            .font(.subheadline)
+                                            .fontWeight(.medium)
+                                            .foregroundColor(.primary)
+                                        Text(storeKitService.hasActiveSubscription() ? "Actif" : "Passer à Premium")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "crown.fill")
+                                        .foregroundColor(storeKitService.hasActiveSubscription() ? .yellow : .orange)
+                                        .font(.title3)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .padding()
+                            .background(Color(.systemGray6))
+                            .cornerRadius(8)
+                            .sheet(isPresented: $showingSubscriptionSheet) {
+                                SubscriptionView()
+                            }
                         }
                     }
                     .padding()
@@ -575,25 +621,25 @@ struct SettingsView: View {
             .navigationTitle(languageManager.translate("Paramètres"))
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarItems(trailing: Button(languageManager.translate("Fermer")) { dismiss() })
-        }
-        .onChange(of: languageManager.current) { newValue in
-            // pré-traduire des libellés fréquents pour accélérer l'UI
-            let common = [
-                "Planifier","Tours guidés","Suggestions","Aventure","Profil",
-                "Point de départ","Rayon de recherche","Temps disponible","Mode de transport",
-                "Paramètres","Langue","Fermer","Notifications","Services","Apparence",
-                "Mode sombre","Unités","Services de localisation","Sauvegarde automatique",
-                "Notifications push","Nouvelles fonctionnalités","Rappels d'activités"
-            ]
-            TranslationService.shared.warmup(strings: common, from: "fr", to: newValue.rawValue)
-            
-            // Force UI refresh
-            DispatchQueue.main.async {
-                // Trigger a view refresh by changing a dummy state
+            .onChange(of: languageManager.current) { newValue in
+                // pré-traduire des libellés fréquents pour accélérer l'UI
+                let common = [
+                    "Planifier","Tours guidés","Suggestions","Aventure","Profil",
+                    "Point de départ","Rayon de recherche","Temps disponible","Mode de transport",
+                    "Paramètres","Langue","Fermer","Notifications","Services","Apparence",
+                    "Mode sombre","Unités","Services de localisation","Sauvegarde automatique",
+                    "Notifications push","Nouvelles fonctionnalités","Rappels d'activités"
+                ]
+                TranslationService.shared.warmup(strings: common, from: "fr", to: newValue.rawValue)
+                
+                // Force UI refresh
+                DispatchQueue.main.async {
+                    // Trigger a view refresh by changing a dummy state
+                }
             }
         }
     }
-    
+
     private func flagEmoji(for language: AppLanguage) -> String {
         switch language {
         case .french: return "🇫🇷"
@@ -768,7 +814,7 @@ struct HelpView: View {
                         ContactRow(
                             icon: "envelope",
                             title: "Email",
-                            subtitle: "support@itinerarly.com",
+                            subtitle: "itinerarly@gmail.com",
                             color: .blue
                         )
                         
@@ -930,7 +976,7 @@ struct AboutView: View {
                             ProfileFeatureRow(
                                 icon: "headphones",
                                 title: "Tours guidés audio",
-                                description: "Guides détaillés pour 80+ villes européennes"
+                                description: "Guides détaillés pour 80+ villes à travers le monde"
                             )
                             
                             ProfileFeatureRow(
@@ -1085,4 +1131,4 @@ struct LinkRow: View {
         .background(Color(.systemGray6))
         .cornerRadius(8)
     }
-} 
+}

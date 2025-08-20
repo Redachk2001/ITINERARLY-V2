@@ -137,77 +137,67 @@ struct TripResultsView: View {
                         PublicTransportInfoView(trip: trip)
                     }
                     
-                    // Action Buttons
-                    VStack(spacing: 12) {
+                    // Action Buttons - Design épuré
+                    VStack(spacing: 8) {
                         // Bouton Aperçu Route - Principal
                         Button(action: showRoutePreview) {
-                            HStack {
+                            HStack(spacing: 8) {
                                 Image(systemName: "map")
+                                    .font(.system(size: 14, weight: .medium))
                                 Text("Aperçu de la route complète")
-                                    .fontWeight(.semibold)
+                                    .font(.system(size: 14, weight: .medium))
                             }
                             .frame(maxWidth: .infinity)
-                            .frame(height: 55)
-                            .background(
-                                LinearGradient(
-                                    gradient: Gradient(colors: [.green, .green.opacity(0.8)]),
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
+                            .frame(height: 36)
+                            .background(Color.gray.opacity(0.8))
                             .foregroundColor(.white)
-                            .cornerRadius(12)
-                            .shadow(color: .green.opacity(0.3), radius: 5, x: 0, y: 3)
+                            .cornerRadius(8)
                         }
                         
                         // Bouton Navigation GPS - Secondaire
                         Button(action: startNavigation) {
-                            HStack {
+                            HStack(spacing: 8) {
                                 Image(systemName: "location.north.line")
+                                    .font(.system(size: 14, weight: .medium))
                                 Text("Navigation GPS temps réel")
-                                    .fontWeight(.semibold)
+                                    .font(.system(size: 14, weight: .medium))
                             }
                             .frame(maxWidth: .infinity)
-                            .frame(height: 50)
-                            .background(
-                                LinearGradient(
-                                    gradient: Gradient(colors: [.blue, .blue.opacity(0.8)]),
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
+                            .frame(height: 36)
+                            .background(Color.gray.opacity(0.8))
                             .foregroundColor(.white)
-                            .cornerRadius(12)
-                            .shadow(color: .blue.opacity(0.3), radius: 5, x: 0, y: 3)
+                            .cornerRadius(8)
                         }
                         
-                        HStack(spacing: 12) {
+                        HStack(spacing: 8) {
                             // Ouvrir dans Plans
                             Button(action: openInMaps) {
-                                HStack {
+                                HStack(spacing: 6) {
                                     Image(systemName: "map.fill")
+                                        .font(.system(size: 12, weight: .medium))
                                     Text("Plans")
-                                        .fontWeight(.semibold)
+                                        .font(.system(size: 12, weight: .medium))
                                 }
                                 .frame(maxWidth: .infinity)
-                                .frame(height: 50)
-                                .background(Color.orange)
+                                .frame(height: 32)
+                                .background(Color.gray.opacity(0.7))
                                 .foregroundColor(.white)
-                                .cornerRadius(12)
+                                .cornerRadius(6)
                             }
                             
                             // Partager
                             Button(action: shareTrip) {
-                                HStack {
+                                HStack(spacing: 6) {
                                     Image(systemName: "square.and.arrow.up")
+                                        .font(.system(size: 12, weight: .medium))
                                     Text("Partager")
-                                        .fontWeight(.semibold)
+                                        .font(.system(size: 12, weight: .medium))
                                 }
                                 .frame(maxWidth: .infinity)
-                                .frame(height: 50)
-                                .background(Color.green)
+                                .frame(height: 32)
+                                .background(Color.gray.opacity(0.7))
                                 .foregroundColor(.white)
-                                .cornerRadius(12)
+                                .cornerRadius(6)
                             }
                         }
                     }
@@ -516,6 +506,33 @@ struct TripStopCard: View {
                         }
                     }
                 }
+                
+                // Actions (Ouvrir / TikTok)
+                HStack(spacing: 16) {
+                    Button(action: {
+                        let mapItem = MKMapItem(placemark: MKPlacemark(coordinate: location.coordinate))
+                        mapItem.name = location.name
+                        mapItem.openInMaps(launchOptions: [:])
+                    }) {
+                        HStack {
+                            Image(systemName: "map")
+                            Text("Ouvrir")
+                        }
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                    }
+
+                    Button(action: {
+                        openInTikTok(query: location.name)
+                    }) {
+                        HStack {
+                            Image(systemName: "video.fill")
+                            Text("TikTok")
+                        }
+                        .font(.caption)
+                        .foregroundColor(.pink)
+                    }
+                }
             }
             
             Spacer()
@@ -524,6 +541,18 @@ struct TripStopCard: View {
         .background(Color(.systemBackground))
         .cornerRadius(12)
         .shadow(color: .black.opacity(0.1), radius: 5, x: 0, y: 2)
+    }
+    
+    private func openInTikTok(query: String) {
+        guard !query.isEmpty else { return }
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        if let appURL = URL(string: "tiktok://search?q=\(encoded)"), UIApplication.shared.canOpenURL(appURL) {
+            UIApplication.shared.open(appURL)
+            return
+        }
+        if let webURL = URL(string: "https://www.tiktok.com/search?q=\(encoded)") {
+            UIApplication.shared.open(webURL)
+        }
     }
 }
 

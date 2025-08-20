@@ -1573,7 +1573,7 @@ class ComprehensivePlaceSearchService: ObservableObject {
             return .swimmingPool
         } else if tags["sport"] as? String == "climbing" {
             return .climbingGym
-        } else if tags["sport"] as? String == "bowling" {
+        } else if tags["sport"] as? String == "bowling" || tags["leisure"] as? String == "bowling" {
             return .bowling
         } else if tags["amenity"] as? String == "restaurant" {
             return .restaurant

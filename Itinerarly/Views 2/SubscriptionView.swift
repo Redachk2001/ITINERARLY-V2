@@ -1,366 +1,311 @@
 import SwiftUI
+import StoreKit
 
 struct SubscriptionView: View {
-    @State private var isPremium = false
-    @State private var showingPurchaseSheet = false
-    @State private var selectedPlan: SubscriptionPlan = .monthly
-    
-    enum SubscriptionPlan: String, CaseIterable {
-        case monthly = "monthly"
-        case yearly = "yearly"
-        
-        var displayName: String {
-            switch self {
-            case .monthly: return "Mensuel"
-            case .yearly: return "Annuel"
-            }
-        }
-        
-        var price: String {
-            switch self {
-            case .monthly: return "4,99 €"
-            case .yearly: return "39,99 €"
-            }
-        }
-        
-        var savings: String? {
-            switch self {
-            case .monthly: return nil
-            case .yearly: return "Économisez 33%"
-            }
-        }
-    }
+    @StateObject private var storeKitService = StoreKitService.shared
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject var languageManager: LanguageManager
     
     var body: some View {
         NavigationView {
             ScrollView {
                 VStack(spacing: 24) {
                     // Header
-                    VStack(spacing: 16) {
-                        Image(systemName: isPremium ? "crown.fill" : "crown")
-                            .font(.system(size: 60))
-                            .foregroundColor(isPremium ? .yellow : .gray)
-                        
-                        Text(isPremium ? "Premium Actif" : "Passez à Premium")
-                            .font(.title)
-                            .fontWeight(.bold)
-                        
-                        Text(isPremium ? "Profitez de toutes les fonctionnalités avancées" : "Débloquez tout le potentiel d'Itinerarly")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(.top, 20)
+                    headerSection
                     
-                    if !isPremium {
-                        // Plans d'abonnement
-                        VStack(spacing: 16) {
-                            Text("Choisissez votre plan")
-                                .font(.headline)
-                                .fontWeight(.semibold)
-                            
-                            ForEach(SubscriptionPlan.allCases, id: \.self) { plan in
-                                PlanCard(
-                                    plan: plan,
-                                    isSelected: selectedPlan == plan,
-                                    action: { selectedPlan = plan }
-                                )
-                            }
-                        }
-                        .padding(.horizontal)
-                        
-                        // Bouton d'achat
-                        Button(action: {
-                            showingPurchaseSheet = true
-                        }) {
-                            HStack {
-                                Image(systemName: "creditcard.fill")
-                                Text("S'abonner à Premium")
-                            }
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.blue)
-                            .cornerRadius(12)
-                        }
-                        .padding(.horizontal)
-                    }
+                    // Plans d'abonnement
+                    plansSection
                     
-                    // Comparaison des fonctionnalités
-                    FeatureComparisonView(isPremium: isPremium)
+                    // Fonctionnalités Premium
+                    featuresSection
                     
-                    if isPremium {
-                        // Gestion de l'abonnement
-                        VStack(spacing: 16) {
-                            Text("Gestion de l'abonnement")
-                                .font(.headline)
-                                .fontWeight(.semibold)
-                            
-                            VStack(spacing: 12) {
-                                Button(action: {
-                                    // Gérer l'abonnement
-                                }) {
-                                    HStack {
-                                        Image(systemName: "gear")
-                                        Text("Gérer l'abonnement")
-                                        Spacer()
-                                        Image(systemName: "chevron.right")
-                                    }
-                                    .foregroundColor(.primary)
-                                    .padding()
-                                    .background(Color.gray.opacity(0.1))
-                                    .cornerRadius(8)
-                                }
-                                
-                                Button(action: {
-                                    // Annuler l'abonnement
-                                }) {
-                                    HStack {
-                                        Image(systemName: "xmark.circle")
-                                        Text("Annuler l'abonnement")
-                                        Spacer()
-                                    }
-                                    .foregroundColor(.red)
-                                    .padding()
-                                    .background(Color.red.opacity(0.1))
-                                    .cornerRadius(8)
-                                }
-                            }
-                        }
-                        .padding(.horizontal)
-                    }
+                    // Boutons d'action
+                    actionButtonsSection
                     
-                    Spacer(minLength: 50)
+                    // Informations légales
+                    legalSection
                 }
+                .padding()
             }
-            .navigationTitle("Abonnement")
-            .navigationBarTitleDisplayMode(.large)
-            .sheet(isPresented: $showingPurchaseSheet) {
-                PurchaseSheet(plan: selectedPlan)
+            .background(ItinerarlyTheme.Backgrounds.appGradient)
+            .navigationTitle("Premium")
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarItems(trailing: Button("Fermer") { dismiss() })
+            .onAppear {
+                Task {
+                    await storeKitService.loadProducts()
+                }
             }
         }
     }
+    
+    // MARK: - Header Section
+    private var headerSection: some View {
+        VStack(spacing: 16) {
+            // Logo Premium
+            ZStack {
+                Circle()
+                    .fill(LinearGradient(
+                        colors: [ItinerarlyTheme.coral, ItinerarlyTheme.deepViolet],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ))
+                    .frame(width: 80, height: 80)
+                
+                Image(systemName: "crown.fill")
+                    .font(.system(size: 40))
+                    .foregroundColor(.white)
+            }
+            
+            VStack(spacing: 8) {
+                Text("Passez à Premium")
+                    .font(ItinerarlyTheme.Typography.title1)
+                    .fontWeight(.bold)
+                    .multilineTextAlignment(.center)
+                
+                Text("Débloquez toutes les fonctionnalités avancées d'Itinerarly")
+                    .font(ItinerarlyTheme.Typography.body)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding()
+        .background(ItinerarlyTheme.Backgrounds.card)
+        .cornerRadius(ItinerarlyTheme.CornerRadius.lg)
+    }
+    
+    // MARK: - Plans Section
+    private var plansSection: some View {
+        VStack(spacing: 16) {
+            ForEach(storeKitService.subscriptionPlans) { plan in
+                SubscriptionPlanCard(
+                    plan: plan,
+                    product: storeKitService.getProduct(for: plan),
+                    isSelected: false,
+                    onSelect: {
+                        Task {
+                            if let product = storeKitService.getProduct(for: plan) {
+                                try await storeKitService.purchase(product)
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
+    
+    // MARK: - Features Section
+    private var featuresSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Fonctionnalités Premium")
+                .font(ItinerarlyTheme.Typography.title2)
+                .fontWeight(.bold)
+            
+            LazyVGrid(columns: [
+                GridItem(.flexible()),
+                GridItem(.flexible())
+            ], spacing: 16) {
+                FeatureCard(
+                    icon: "headphones",
+                    title: "Tours guidés",
+                    description: "Accès illimité à tous nos tours audio"
+                )
+                
+                FeatureCard(
+                    icon: "lightbulb",
+                    title: "Suggestions IA",
+                    description: "Recommandations personnalisées"
+                )
+                
+                FeatureCard(
+                    icon: "map",
+                    title: "Navigation hors ligne",
+                    description: "Téléchargez vos itinéraires"
+                )
+                
+                FeatureCard(
+                    icon: "star",
+                    title: "Contenu exclusif",
+                    description: "Tours et lieux premium"
+                )
+                
+                FeatureCard(
+                    icon: "xmark.circle",
+                    title: "Sans publicités",
+                    description: "Expérience sans interruption"
+                )
+                
+                FeatureCard(
+                    icon: "message",
+                    title: "Support prioritaire",
+                    description: "Aide rapide et personnalisée"
+                )
+            }
+        }
+        .padding()
+        .background(ItinerarlyTheme.Backgrounds.card)
+        .cornerRadius(ItinerarlyTheme.CornerRadius.lg)
+    }
+    
+    // MARK: - Action Buttons Section
+    private var actionButtonsSection: some View {
+        VStack(spacing: 12) {
+            if storeKitService.isLoading {
+                ProgressView("Chargement...")
+                    .progressViewStyle(CircularProgressViewStyle())
+            } else {
+                Button("Restaurer les achats") {
+                    Task {
+                        await storeKitService.restorePurchases()
+                    }
+                }
+                .font(ItinerarlyTheme.Typography.buttonText)
+                .foregroundColor(ItinerarlyTheme.ModeColors.profile)
+                .padding()
+                .frame(maxWidth: .infinity)
+                .background(Color.clear)
+                .overlay(
+                    RoundedRectangle(cornerRadius: ItinerarlyTheme.CornerRadius.md)
+                        .stroke(ItinerarlyTheme.ModeColors.profile, lineWidth: 1)
+                )
+            }
+            
+            if let errorMessage = storeKitService.errorMessage {
+                Text(errorMessage)
+                    .font(ItinerarlyTheme.Typography.caption1)
+                    .foregroundColor(ItinerarlyTheme.danger)
+                    .multilineTextAlignment(.center)
+                    .padding()
+            }
+        }
+    }
+    
+    // MARK: - Legal Section
+    private var legalSection: some View {
+        VStack(spacing: 8) {
+            Text("L'abonnement se renouvelle automatiquement sauf annulation 24h avant la fin de la période. Annulez à tout moment dans les paramètres de votre compte App Store.")
+                .font(ItinerarlyTheme.Typography.caption2)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+            
+            HStack(spacing: 16) {
+                Button("Conditions d'utilisation") {
+                    // Ouvrir les conditions
+                }
+                .font(ItinerarlyTheme.Typography.caption2)
+                .foregroundColor(ItinerarlyTheme.ModeColors.profile)
+                
+                Button("Politique de confidentialité") {
+                    // Ouvrir la politique
+                }
+                .font(ItinerarlyTheme.Typography.caption2)
+                .foregroundColor(ItinerarlyTheme.ModeColors.profile)
+            }
+        }
+        .padding()
+    }
 }
 
-struct PlanCard: View {
-    let plan: SubscriptionView.SubscriptionPlan
+// MARK: - Subscription Plan Card
+struct SubscriptionPlanCard: View {
+    let plan: SubscriptionPlan
+    let product: Product?
     let isSelected: Bool
-    let action: () -> Void
+    let onSelect: () -> Void
     
     var body: some View {
-        Button(action: action) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
+        Button(action: onSelect) {
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Text(plan.displayName)
-                            .font(.headline)
-                            .fontWeight(.semibold)
+                        Text(plan.title)
+                            .font(ItinerarlyTheme.Typography.headline)
+                            .fontWeight(.bold)
                         
-                        if let savings = plan.savings {
-                            Text(savings)
-                                .font(.caption)
+                        if plan.isPopular {
+                            Text("POPULAIRE")
+                                .font(ItinerarlyTheme.Typography.caption1)
                                 .fontWeight(.bold)
                                 .foregroundColor(.white)
                                 .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                                .background(Color.green)
+                                .padding(.vertical, 4)
+                                .background(ItinerarlyTheme.coral)
                                 .cornerRadius(4)
                         }
                     }
                     
-                    Text(plan.price)
-                        .font(.title2)
-                        .fontWeight(.bold)
-                        .foregroundColor(.blue)
+                    Text(plan.description)
+                        .font(ItinerarlyTheme.Typography.caption1)
+                        .foregroundColor(.secondary)
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(plan.features.prefix(3), id: \.self) { feature in
+                            HStack(spacing: 8) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(ItinerarlyTheme.success)
+                                    .font(.caption)
+                                Text(feature)
+                                    .font(ItinerarlyTheme.Typography.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
                 }
                 
                 Spacer()
                 
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.title2)
-                    .foregroundColor(isSelected ? .blue : .gray)
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(product?.displayPrice ?? plan.price)
+                        .font(ItinerarlyTheme.Typography.title3)
+                        .fontWeight(.bold)
+                    
+                    Text(plan.period)
+                        .font(ItinerarlyTheme.Typography.caption2)
+                        .foregroundColor(.secondary)
+                }
             }
             .padding()
-            .background(isSelected ? Color.blue.opacity(0.1) : Color.gray.opacity(0.05))
-            .cornerRadius(12)
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 2)
+            .background(
+                RoundedRectangle(cornerRadius: ItinerarlyTheme.CornerRadius.md)
+                    .fill(isSelected ? ItinerarlyTheme.ModeColors.profile.opacity(0.1) : ItinerarlyTheme.Backgrounds.card)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: ItinerarlyTheme.CornerRadius.md)
+                            .stroke(isSelected ? ItinerarlyTheme.ModeColors.profile : Color.clear, lineWidth: 2)
+                    )
             )
         }
         .buttonStyle(PlainButtonStyle())
     }
 }
 
-struct FeatureComparisonView: View {
-    let isPremium: Bool
+// MARK: - Feature Card
+struct FeatureCard: View {
+    let icon: String
+    let title: String
+    let description: String
     
     var body: some View {
-        VStack(spacing: 16) {
-            Text("Comparaison des fonctionnalités")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: icon)
+                .font(.title2)
+                .foregroundColor(ItinerarlyTheme.ModeColors.profile)
+            
+            Text(title)
+                .font(ItinerarlyTheme.Typography.subheadline)
                 .fontWeight(.semibold)
             
-            VStack(spacing: 12) {
-                FeatureRow(
-                    feature: "Mode Aventure",
-                    freeValue: "1 catégorie exclue",
-                    premiumValue: "Toutes catégories",
-                    isPremium: isPremium
-                )
-                
-                FeatureRow(
-                    feature: "Tours Guidés",
-                    freeValue: "Tours limités",
-                    premiumValue: "100% des tours",
-                    isPremium: isPremium
-                )
-                
-                FeatureRow(
-                    feature: "Mode Suggestions",
-                    freeValue: "1 essai/jour",
-                    premiumValue: "Illimité",
-                    isPremium: isPremium
-                )
-                
-                FeatureRow(
-                    feature: "Publicités",
-                    freeValue: "Avec publicités",
-                    premiumValue: "Sans publicités",
-                    isPremium: isPremium
-                )
-                
-                FeatureRow(
-                    feature: "Sponsoring Business",
-                    freeValue: "Non disponible",
-                    premiumValue: "Accès prioritaire",
-                    isPremium: isPremium
-                )
-            }
-        }
-        .padding(.horizontal)
-    }
-}
-
-struct FeatureRow: View {
-    let feature: String
-    let freeValue: String
-    let premiumValue: String
-    let isPremium: Bool
-    
-    var body: some View {
-        HStack {
-            Text(feature)
-                .font(.subheadline)
-                .fontWeight(.medium)
-                .frame(width: 120, alignment: .leading)
-            
-            Spacer()
-            
-            Text(freeValue)
-                .font(.caption)
+            Text(description)
+                .font(ItinerarlyTheme.Typography.caption2)
                 .foregroundColor(.secondary)
-                .frame(width: 80, alignment: .center)
-            
-            Text(premiumValue)
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundColor(isPremium ? .blue : .secondary)
-                .frame(width: 80, alignment: .center)
         }
-        .padding(.vertical, 4)
-    }
-}
-
-struct PurchaseSheet: View {
-    let plan: SubscriptionView.SubscriptionPlan
-    @Environment(\.dismiss) private var dismiss
-    
-    var body: some View {
-        NavigationView {
-            VStack(spacing: 24) {
-                // Confirmation
-                VStack(spacing: 16) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 60))
-                        .foregroundColor(.green)
-                    
-                    Text("Confirmer l'abonnement")
-                        .font(.title2)
-                        .fontWeight(.bold)
-                    
-                    Text("Plan \(plan.displayName) - \(plan.price)")
-                        .font(.headline)
-                        .foregroundColor(.blue)
-                }
-                
-                // Détails
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Votre abonnement inclut :")
-                        .font(.headline)
-                        .fontWeight(.semibold)
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        FeatureItem(text: "Mode Aventure illimité")
-                        FeatureItem(text: "Tous les tours guidés")
-                        FeatureItem(text: "Suggestions illimitées")
-                        FeatureItem(text: "Sans publicités")
-                        FeatureItem(text: "Support prioritaire")
-                    }
-                }
-                .padding()
-                .background(Color.gray.opacity(0.1))
-                .cornerRadius(12)
-                
-                Spacer()
-                
-                // Boutons
-                VStack(spacing: 12) {
-                    Button(action: {
-                        // Procéder à l'achat
-                        dismiss()
-                    }) {
-                        Text("Confirmer l'achat")
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.blue)
-                            .cornerRadius(12)
-                    }
-                    
-                    Button(action: {
-                        dismiss()
-                    }) {
-                        Text("Annuler")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-            .padding()
-            .navigationTitle("Achat")
-            .navigationBarTitleDisplayMode(.inline)
-            .navigationBarItems(trailing: Button("Fermer") { dismiss() })
-        }
-    }
-}
-
-struct FeatureItem: View {
-    let text: String
-    
-    var body: some View {
-        HStack {
-            Image(systemName: "checkmark")
-                .foregroundColor(.green)
-                .font(.caption)
-            Text(text)
-                .font(.subheadline)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(ItinerarlyTheme.CornerRadius.md)
     }
 }
 
 #Preview {
     SubscriptionView()
+        .environmentObject(LanguageManager.shared)
 } 

@@ -65,6 +65,11 @@ struct MainTabView: View {
             
             UITabBar.appearance().standardAppearance = appearance
             UITabBar.appearance().scrollEdgeAppearance = appearance
+            
+            // Démarrer la localisation automatiquement si autorisée
+            if locationManager.authorizationStatus == .authorizedWhenInUse || locationManager.authorizationStatus == .authorizedAlways {
+                locationManager.startUpdatingLocation()
+            }
         }
     }
 }

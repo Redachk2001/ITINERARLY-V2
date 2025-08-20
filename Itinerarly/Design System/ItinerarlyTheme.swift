@@ -80,11 +80,11 @@ struct ItinerarlyTheme {
         
         static let appGradient = LinearGradient(
             colors: [
-                oceanBlue.opacity(0.12),
-                turquoise.opacity(0.08),
-                coral.opacity(0.06),
-                deepViolet.opacity(0.05),
-                oceanBlue.opacity(0.12)
+                oceanBlue.opacity(0.06),
+                turquoise.opacity(0.05),
+                coral.opacity(0.04),
+                deepViolet.opacity(0.04),
+                oceanBlue.opacity(0.06)
             ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
@@ -157,6 +157,12 @@ struct ItinerarlyTheme {
                 return (warmGray.opacity(0.3), 8, 0, 4)
             }
         }
+    }
+
+    // MARK: - Component Sizes
+    enum Sizes {
+        static let tourCardImageHeight: CGFloat = 180
+        static let tourDetailHeaderHeight: CGFloat = 220
     }
     
     // MARK: - Button Styles

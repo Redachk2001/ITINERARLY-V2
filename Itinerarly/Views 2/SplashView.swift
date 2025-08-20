@@ -9,12 +9,12 @@ struct SplashView: View {
     
     var body: some View {
         ZStack {
-            // Gradient Background moderne
+            // Fond beige épuré (comme l'accueil)
             LinearGradient(
-                gradient: Gradient(colors: [
-                    Color(red: 0.31, green: 0.27, blue: 0.90), // Indigo
-                    Color(red: 0.49, green: 0.23, blue: 0.93)  // Violet
-                ]),
+                colors: [
+                    Color(#colorLiteral(red: 0.99, green: 0.97, blue: 0.94, alpha: 1)),
+                    Color(#colorLiteral(red: 0.98, green: 0.93, blue: 0.88, alpha: 1))
+                ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -25,33 +25,29 @@ struct SplashView: View {
                 GlobeILogoView(size: 170, spin: spin, pulse: pulse, bob: bob)
                     .scaleEffect(scale)
                     .opacity(opacity)
+                    .colorMultiply(Color(#colorLiteral(red: 0.20, green: 0.18, blue: 0.22, alpha: 1)))
                 
                 // App Name et description
                 VStack(spacing: 12) {
                     Text("ITINERARLY")
                         .font(.system(size: 32, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
+                        .foregroundColor(Color(#colorLiteral(red: 0.20, green: 0.18, blue: 0.22, alpha: 1)))
                         .tracking(2)
                         .opacity(opacity)
                     
                     Text("Votre compagnon de voyage intelligent")
                         .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(.white.opacity(0.9))
+                        .foregroundColor(Color(#colorLiteral(red: 0.20, green: 0.18, blue: 0.22, alpha: 0.8)))
                         .multilineTextAlignment(.center)
                         .opacity(opacity)
                 }
                 
-                // Indicateur de chargement
-                VStack(spacing: 8) {
-                    ProgressView()
-                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                        .scaleEffect(1.2)
-                        .opacity(opacity)
-                    
-                    Text("Chargement...")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.white.opacity(0.8))
-                        .opacity(opacity)
+                // Indicateur de chargement: monuments qui sautillent
+                HStack(spacing: 16) {
+                    BouncingEmoji(emoji: "🗼")
+                    BouncingEmoji(emoji: "🏛️")
+                    BouncingEmoji(emoji: "🗽")
+                    BouncingEmoji(emoji: "🗿")
                 }
             }
         }
@@ -79,6 +75,19 @@ struct SplashView: View {
 #Preview {
     SplashView()
 } 
+
+// MARK: - Bouncing Emoji Loader
+private struct BouncingEmoji: View {
+    let emoji: String
+    @State private var up = false
+    var body: some View {
+        Text(emoji)
+            .font(.system(size: 28))
+            .offset(y: up ? -8 : 8)
+            .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true).delay(Double.random(in: 0...0.4)), value: up)
+            .onAppear { up = true }
+    }
+}
 
 // MARK: - Route Logo View
 private struct GlobeILogoView: View {
