@@ -169,33 +169,33 @@ class UniversalPlaceSearchService: ObservableObject {
     
 
     
-    // MARK: - Termes de recherche Apple Plans (exactement comme vous tapez)
+    // MARK: - Termes de recherche Apple Plans (universels pour le monde entier)
     private func getSearchTerm(for category: LocationCategory) -> String {
         switch category {
         case .swimmingPool:
-            return "piscine"
+            return "swimming pool"
         case .bowling:
             return "bowling"
         case .climbingGym:
-            return "escalade"
+            return "climbing gym"
         case .iceRink:
-            return "patinoire"
+            return "ice rink"
         case .miniGolf:
             return "mini golf"
         case .escapeRoom:
-            return "escape game"
+            return "escape room"
         case .laserTag:
-            return "laser game"
+            return "laser tag"
         case .paintball:
             return "paintball"
         case .karting:
             return "karting"
         case .trampolinePark:
-            return "trampoline"
+            return "trampoline park"
         case .waterPark:
-            return "parc aquatique"
+            return "water park"
         case .adventurePark:
-            return "parc aventure"
+            return "adventure park"
         case .zoo:
             return "zoo"
         case .aquarium:
@@ -203,23 +203,23 @@ class UniversalPlaceSearchService: ObservableObject {
         case .restaurant:
             return "restaurant"
         case .cafe:
-            return "café"
+            return "cafe"
         case .bar:
             return "bar"
         case .museum:
-            return "musée"
+            return "museum"
         case .shopping:
-            return "magasin"
+            return "shopping"
         case .sport:
-            return "salle de sport"
+            return "gym"
         case .nature:
-            return "parc"
+            return "park"
         case .entertainment:
-            return "cinéma"
+            return "entertainment"
         case .historical:
             return "monument"
         case .culture:
-            return "centre culturel"
+            return "cultural center"
         default:
             return category.displayName.lowercased()
         }

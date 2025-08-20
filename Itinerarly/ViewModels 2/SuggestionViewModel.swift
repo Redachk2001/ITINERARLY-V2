@@ -270,14 +270,15 @@ class SuggestionViewModel: ObservableObject {
             print("✅ Trouvé \(places.count) lieux pour \(category.displayName)")
         }
         
-        // Si aucune catégorie sélectionnée, chercher quelques catégories populaires
+        // Si aucune catégorie sélectionnée, chercher des catégories universelles qui existent partout
         if filter.categories.isEmpty {
-            print("📍 Aucune catégorie spécifiée, recherche catégories populaires")
-            let popularCategories: [LocationCategory] = [
-                .restaurant, .cafe, .bar, .museum, .shopping, .nature, .entertainment
+            print("📍 Aucune catégorie spécifiée, recherche catégories universelles")
+            let universalCategories: [LocationCategory] = [
+                .restaurant, .cafe, .shopping, .nature
             ]
             
-            for category in popularCategories {
+            for category in universalCategories {
+                print("🌍 Recherche universelle pour: \(category.displayName)")
                 let places: [Location] = await withCheckedContinuation { continuation in
                     searchService.searchPlacesForCategory(
                         category: category,
@@ -288,6 +289,7 @@ class SuggestionViewModel: ObservableObject {
                     }
                 }
                 allPlaces.append(contentsOf: places)
+                print("✅ Trouvé \(places.count) lieux universels pour \(category.displayName)")
             }
         }
         
