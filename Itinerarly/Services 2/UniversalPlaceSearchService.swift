@@ -169,57 +169,58 @@ class UniversalPlaceSearchService: ObservableObject {
     
 
     
-    // MARK: - Termes de recherche Apple Plans (universels pour le monde entier)
+    // MARK: - Termes de recherche multilingues (fonctionnent partout dans le monde)
     private func getSearchTerm(for category: LocationCategory) -> String {
+        // Utiliser des termes multilingues qui fonctionnent dans tous les pays
         switch category {
         case .swimmingPool:
-            return "swimming pool"
+            return "piscine swimming pool natación piscina"
         case .bowling:
-            return "bowling"
+            return "bowling bolos"
         case .climbingGym:
-            return "climbing gym"
+            return "escalade climbing gym escalada"
         case .iceRink:
-            return "ice rink"
+            return "patinoire ice rink pista de hielo"
         case .miniGolf:
-            return "mini golf"
+            return "mini golf minigolf"
         case .escapeRoom:
-            return "escape room"
+            return "escape room escape game"
         case .laserTag:
-            return "laser tag"
+            return "laser tag laser game"
         case .paintball:
             return "paintball"
         case .karting:
-            return "karting"
+            return "karting go kart"
         case .trampolinePark:
-            return "trampoline park"
+            return "trampoline park parc trampoline"
         case .waterPark:
-            return "water park"
+            return "water park parc aquatique parque acuático"
         case .adventurePark:
-            return "adventure park"
+            return "adventure park parc aventure parque aventura"
         case .zoo:
-            return "zoo"
+            return "zoo zoológico"
         case .aquarium:
-            return "aquarium"
+            return "aquarium acuario"
         case .restaurant:
-            return "restaurant"
+            return "restaurant restaurante"
         case .cafe:
-            return "cafe"
+            return "cafe café"
         case .bar:
             return "bar"
         case .museum:
-            return "museum"
+            return "museum musée museo"
         case .shopping:
-            return "shopping"
+            return "shopping tienda magasin"
         case .sport:
-            return "gym"
+            return "gym sport salle de sport gimnasio"
         case .nature:
-            return "park"
+            return "park parc parque"
         case .entertainment:
-            return "entertainment"
+            return "entertainment cinéma cine cinema"
         case .historical:
-            return "monument"
+            return "monument histórico"
         case .culture:
-            return "cultural center"
+            return "cultural center centre culturel centro cultural"
         default:
             return category.displayName.lowercased()
         }
