@@ -61,11 +61,12 @@ struct GuidedToursView: View {
                         VStack(spacing: ItinerarlyTheme.Spacing.xs) {
                             if viewModel.isLocationOptimized {
                                 HStack {
-                                    Image(systemName: "location.circle.fill")
+                                    Image(systemName: "flag.filled")
                                         .foregroundColor(ItinerarlyTheme.success)
-                                    Text("Itinéraire optimisé depuis votre position")
+                                    Text("Tour personnalisé depuis votre point de départ")
                                         .font(ItinerarlyTheme.Typography.caption1)
                                         .foregroundColor(ItinerarlyTheme.success)
+                                        .fontWeight(.medium)
                                 }
                             }
                             
@@ -1156,6 +1157,24 @@ struct TourCard: View {
                     .padding(.horizontal, 8)
                     .background(Color(.systemGray6))
                     .cornerRadius(8)
+                    
+                    // Indicateur de point de départ personnalisé
+                    if tour.startAddress != nil || tour.startLocation != nil {
+                        HStack {
+                            Image(systemName: "flag.filled")
+                                .foregroundColor(.green)
+                                .font(.caption)
+                            Text("Départ depuis votre adresse")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                                .fontWeight(.medium)
+                            Spacer()
+                        }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 8)
+                        .background(Color.green.opacity(0.1))
+                        .cornerRadius(8)
+                    }
                     
                     HStack {
                         // Duration totale
