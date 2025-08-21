@@ -237,15 +237,28 @@ class StoreKitService: ObservableObject {
     // MARK: - Utilitaires
     private func getCurrentPlan(from productId: String) -> String? {
         switch productId {
-        case "itinerarly.monthly":
+        case "com.itinerarly.premium.monthly":
             return "Premium Mensuel"
-        case "itinerarly.yearly":
+        case "com.itinerarly.premium.yearly":
             return "Premium Annuel"
-        case "itinerarly.lifetime":
-            return "Premium à vie"
+        case "com.itinerarly.premium.lifetime":
+            return "Premium à Vie"
         default:
             return nil
         }
+    }
+    
+    // MARK: - Vérification du statut Premium
+    func isPremiumUser() -> Bool {
+        return hasActiveSubscription()
+    }
+    
+    func getCurrentSubscriptionPlan() -> String? {
+        return subscriptionStatus?.currentPlan
+    }
+    
+    func getSubscriptionExpirationDate() -> Date? {
+        return subscriptionStatus?.expirationDate
     }
     
     func getProduct(for plan: SubscriptionPlan) -> Product? {
