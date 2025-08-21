@@ -301,14 +301,11 @@ struct DayTripPlannerView: View {
             Label(languageManager.translate("Mode de transport"), systemImage: "car")
                 .font(.headline)
                 .foregroundColor(.primary)
-            HStack(spacing: 6) {
-                ForEach(TransportMode.allCases, id: \.self) { mode in
-                    TransportModeButton(
-                        mode: mode,
-                        isSelected: transportMode == mode
-                    ) { transportMode = mode }
-                }
-            }
+            
+            TransportModeRow(
+                selectedMode: $transportMode,
+                modes: TransportMode.allCases
+            )
         }
     }
 
@@ -618,28 +615,7 @@ struct DayTripPlannerView: View {
 
 }
 
-struct TransportModeButton: View {
-    let mode: TransportMode
-    let isSelected: Bool
-    let action: () -> Void
-    
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: mode.icon)
-                    .font(.system(size: 14, weight: .medium))
-                Text(mode.displayName)
-                    .font(.caption2)
-                    .fontWeight(.medium)
-            }
-            .frame(maxWidth: .infinity, minHeight: 40)
-            .background(isSelected ? Color.blue : Color(.systemGray6))
-            .foregroundColor(isSelected ? .white : .primary)
-            .cornerRadius(8)
-        }
-        .buttonStyle(PlainButtonStyle())
-    }
-}
+
 
 struct NumberOfLocationsButton: View {
     let number: Int

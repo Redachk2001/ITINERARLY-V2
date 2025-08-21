@@ -444,22 +444,13 @@ struct SuggestionView: View {
                 .font(.headline)
                 .foregroundColor(.primary)
             
-            HStack(spacing: ItinerarlyTheme.Spacing.sm) {
-                ForEach([TransportMode.walking, .cycling, .driving], id: \.self) { mode in
-                    Button(action: { viewModel.updateTransportMode(mode) }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: mode.icon)
-                            Text(mode.displayName)
-                                .font(.caption)
-                        }
-                        .padding(.horizontal, ItinerarlyTheme.Spacing.sm)
-                        .padding(.vertical, 6)
-                        .background(viewModel.filter.transportMode == mode ? ItinerarlyTheme.ModeColors.suggestions : Color(.systemGray6))
-                        .foregroundColor(viewModel.filter.transportMode == mode ? .white : .primary)
-                        .cornerRadius(8)
-                    }
-                }
-            }
+            TransportModeRow(
+                selectedMode: Binding(
+                    get: { viewModel.filter.transportMode },
+                    set: { viewModel.updateTransportMode($0) }
+                ),
+                modes: [.walking, .cycling, .driving]
+            )
         }
     }
     

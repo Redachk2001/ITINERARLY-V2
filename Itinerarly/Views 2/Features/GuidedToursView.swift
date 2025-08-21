@@ -296,18 +296,13 @@ struct GuidedToursView: View {
                             .font(.headline)
                             .foregroundColor(.primary)
                         
-                        HStack(spacing: 10) {
-                                ForEach(TransportMode.allCases, id: \.self) { mode in
-                                GTTransportModeButton(
-                                        mode: mode,
-                                        isSelected: transportMode == mode
-                                    ) {
-                                        transportMode = mode
-                                        if !viewModel.tours.isEmpty {
-                                            loadToursWithLocation(for: selectedCity)
-                                        }
-                                    }
-                                }
+                        TransportModeRow(
+                            selectedMode: $transportMode,
+                            modes: TransportMode.allCases
+                        ) { _ in
+                            if !viewModel.tours.isEmpty {
+                                loadToursWithLocation(for: selectedCity)
+                            }
                         }
                     }
                     
@@ -1402,27 +1397,4 @@ struct CountryFilterButton: View {
     }
 } 
 
-// MARK: - Transport button harmonisé (taille compacte)
-struct GTTransportModeButton: View {
-    let mode: TransportMode
-    let isSelected: Bool
-    let action: () -> Void
-    
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: mode.icon)
-                    .font(.system(size: 14, weight: .medium))
-                Text(mode.displayName)
-                    .font(.caption2)
-                    .fontWeight(.medium)
-                    .multilineTextAlignment(.center)
-            }
-            .frame(width: 70, height: 48)
-            .background(isSelected ? Color.blue : Color(.systemGray6))
-            .foregroundColor(isSelected ? .white : .primary)
-            .cornerRadius(8)
-        }
-        .buttonStyle(PlainButtonStyle())
-    }
-} 
+ 

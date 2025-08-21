@@ -443,27 +443,17 @@ struct AdventurerView: View {
     
     // MARK: - Mode de transport
     private var transportSection: some View {
-        let modes: [TransportMode] = [.walking, .cycling, .driving]
-        return VStack(alignment: .leading, spacing: ItinerarlyTheme.Spacing.sm) {
+        VStack(alignment: .leading, spacing: ItinerarlyTheme.Spacing.sm) {
             Label("Mode de transport", systemImage: "car")
                 .font(.subheadline)
-            HStack(spacing: ItinerarlyTheme.Spacing.sm) {
-                ForEach(modes, id: \.self) { mode in
-                    let isSelected = (viewModel.filter.transportMode == mode)
-                    Button(action: { viewModel.updateTransportMode(mode) }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: mode.icon)
-                            Text(mode.displayName)
-                                .font(.caption)
-                        }
-                    }
-                    .padding(.horizontal, ItinerarlyTheme.Spacing.sm)
-                    .padding(.vertical, 6)
-                    .background(isSelected ? Color.purple : Color(.systemGray6))
-                    .foregroundColor(isSelected ? .white : .primary)
-                    .cornerRadius(8)
-                }
-            }
+            
+            TransportModeRow(
+                selectedMode: Binding(
+                    get: { viewModel.filter.transportMode },
+                    set: { viewModel.updateTransportMode($0) }
+                ),
+                modes: [.walking, .cycling, .driving]
+            )
         }
     }
     
