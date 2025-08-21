@@ -2,7 +2,60 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Configuration de base de l'application -->
+	<key>CFBundleDisplayName</key>
+	<string>Itinerarly</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.votrenom.Itinerarly</string>
+	<key>CFBundleVersion</key>
+	<string>1.0.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleName</key>
+	<string>Itinerarly</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleResourceSpecification</key>
+	<string>ResourceRules.plist</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>iPhoneOS</string>
+	</array>
+	<key>MinimumOSVersion</key>
+	<string>17.0</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UILaunchStoryboardName</key>
+	<string>LaunchScreen</string>
+	<key>UIMainStoryboardFile</key>
+	<string>Main</string>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
 
+	<!-- Permissions de localisation -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Itinerarly a besoin d'accéder à votre localisation pour vous proposer des itinéraires personnalisés et des lieux à proximité.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Itinerarly utilise votre localisation pour la navigation en temps réel et les notifications de proximité.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>Itinerarly utilise votre localisation en arrière-plan pour les notifications de proximité et la navigation continue.</string>
+
+	<!-- Permissions média -->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Cette app utilise le microphone pour les fonctionnalités audio des visites guidées.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
@@ -11,6 +64,22 @@
 	<string>Cette app accède à vos photos pour partager vos itinéraires et souvenirs de voyage.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Cette app utilise la caméra pour capturer vos souvenirs de voyage.</string>
+	
+	<!-- Permissions réseau -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Itinerarly utilise votre réseau local pour optimiser les performances et la synchronisation.</string>
+	
+	<!-- Permissions de notifications -->
+	<key>NSUserNotificationUsageDescription</key>
+	<string>Itinerarly vous envoie des notifications pour les rappels d'itinéraires, les nouveautés et les alertes de proximité.</string>
+	
+	<!-- Permissions de contacts (optionnel) -->
+	<key>NSContactsUsageDescription</key>
+	<string>Itinerarly peut accéder à vos contacts pour partager des itinéraires avec vos amis.</string>
+	
+	<!-- Permissions de calendrier (optionnel) -->
+	<key>NSCalendarsUsageDescription</key>
+	<string>Itinerarly peut ajouter vos itinéraires à votre calendrier pour une meilleure organisation.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoadsForMedia</key>

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<model type="com.apple.IDECoreDataModeler.DataModel" documentVersion="1.0" lastSavedToolsVersion="22522" systemVersion="23A344" minimumToolsVersion="Automatic" sourceLanguage="Swift" usedWithCloudKit="YES" userDefinedModelVersionIdentifier="">
+    <entity name="FavoriteLocationEntity" representedClassName="FavoriteLocationEntity" syncable="YES" codeGenerationType="class">
+        <attribute name="address" optional="YES" attributeType="String"/>
+        <attribute name="category" optional="YES" attributeType="String"/>
+        <attribute name="dateAdded" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="locationDescription" optional="YES" attributeType="String"/>
+        <attribute name="id" optional="YES" attributeType="String"/>
+        <attribute name="imageURL" optional="YES" attributeType="String"/>
+        <attribute name="latitude" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <attribute name="longitude" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <attribute name="name" optional="YES" attributeType="String"/>
+        <attribute name="openingHours" optional="YES" attributeType="String"/>
+        <attribute name="rating" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <attribute name="recommendedDuration" optional="YES" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="visitTips" optional="YES" attributeType="String"/>
+    </entity>
+    <entity name="SavedItineraryEntity" representedClassName="SavedItineraryEntity" syncable="YES" codeGenerationType="class">
+        <attribute name="dateCreated" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="id" optional="YES" attributeType="String"/>
+        <attribute name="isFavorite" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
+        <attribute name="name" optional="YES" attributeType="String"/>
+        <attribute name="tripData" optional="YES" attributeType="Binary"/>
+    </entity>
+    <entity name="SearchCacheEntity" representedClassName="SearchCacheEntity" syncable="YES" codeGenerationType="class">
+        <attribute name="query" optional="YES" attributeType="String"/>
+        <attribute name="results" optional="YES" attributeType="Binary"/>
+        <attribute name="timestamp" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+    </entity>
+    <entity name="UserPreferencesEntity" representedClassName="UserPreferencesEntity" syncable="YES" codeGenerationType="class">
+        <attribute name="audioEnabled" optional="YES" attributeType="Boolean" defaultValueString="YES" usesScalarValueType="YES"/>
+        <attribute name="autoSaveItineraries" optional="YES" attributeType="Boolean" defaultValueString="YES" usesScalarValueType="YES"/>
+        <attribute name="language" optional="YES" attributeType="String"/>
+        <attribute name="notificationsEnabled" optional="YES" attributeType="Boolean" defaultValueString="YES" usesScalarValueType="YES"/>
+        <attribute name="searchRadius" optional="YES" attributeType="Double" defaultValueString="10000" usesScalarValueType="YES"/>
+        <attribute name="theme" optional="YES" attributeType="String"/>
+        <attribute name="transportMode" optional="YES" attributeType="String"/>
+    </entity>
+</model>
